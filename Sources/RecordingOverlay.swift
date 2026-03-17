@@ -219,10 +219,7 @@ final class RecordingOverlayManager {
     }
 
     private var overlayWidth: CGFloat {
-        let showsStopButton =
-            overlayState.phase == .initializing ||
-            (overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle)
-        let baseWidth: CGFloat = showsStopButton ? 150 : 92
+        let baseWidth: CGFloat = overlayState.phase == .recording && overlayState.recordingTriggerMode == .toggle ? 150 : 92
         guard screenHasNotch else { return baseWidth }
         return max(notchWidth, baseWidth)
     }
@@ -261,21 +258,16 @@ final class RecordingOverlayManager {
         if transcribingPanel != nil { return }
 
         let overlap = screenHasNotch ? notchOverlap : 0
-        let panelWidth: CGFloat = 132
-        let panelHeight: CGFloat = 34 + overlap
+        let panelWidth: CGFloat = 44
+        let panelHeight: CGFloat = 22 + overlap
 
         let panel = makeOverlayPanel(width: panelWidth, height: panelHeight)
         panel.hasShadow = false
         panel.contentView = makeNotchContent(
             width: panelWidth,
             height: panelHeight,
-            cornerRadius: screenHasNotch ? 16 : 12,
-            rootView: TranscribingIndicatorView(
-                onStopButtonPressed: { [weak self] in
-                    self?.onStopButtonPressed?()
-                }
-            )
-            .padding(.top, overlap)
+            cornerRadius: screenHasNotch ? 14 : 11,
+            rootView: TranscribingIndicatorView().padding(.top, overlap)
         )
 
         if let screen = NSScreen.main {
@@ -393,11 +385,6 @@ struct RecordingOverlayView: View {
     @ObservedObject var state: RecordingOverlayState
     let onStopButtonPressed: () -> Void
 
-    private var showsStopButton: Bool {
-        state.phase == .initializing ||
-        (state.phase == .recording && state.recordingTriggerMode == .toggle)
-    }
-
     var body: some View {
         HStack(spacing: 10) {
             Group {
@@ -410,8 +397,20 @@ struct RecordingOverlayView: View {
                 }
             }
 
-            if showsStopButton {
-                StopCapsuleButton(action: onStopButtonPressed)
+            if state.phase == .recording && state.recordingTriggerMode == .toggle {
+                Button(action: onStopButtonPressed) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("Stop")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Color.red.opacity(0.92)))
+                }
+                .buttonStyle(.plain)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
@@ -424,45 +423,19 @@ struct RecordingOverlayView: View {
 
 // MARK: - Transcribing Indicator
 
-private struct StopCapsuleButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: "stop.fill")
-                    .font(.system(size: 9, weight: .bold))
-                Text("Stop")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(Color.red.opacity(0.92)))
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 struct TranscribingIndicatorView: View {
-    let onStopButtonPressed: () -> Void
     @State private var animatingDot = 0
     @State private var dotAnimationTimer: Timer?
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { index in
-                    Circle()
-                        .fill(.white.opacity(animatingDot == index ? 0.9 : 0.25))
-                        .frame(width: 4.5, height: 4.5)
-                        .animation(.easeInOut(duration: 0.4), value: animatingDot)
-                }
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(.white.opacity(animatingDot == index ? 0.9 : 0.25))
+                    .frame(width: 4.5, height: 4.5)
+                    .animation(.easeInOut(duration: 0.4), value: animatingDot)
             }
-
-            StopCapsuleButton(action: onStopButtonPressed)
         }
-        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { startDotAnimation() }
         .onDisappear { stopDotAnimation() }
