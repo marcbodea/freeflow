@@ -234,6 +234,9 @@ struct GeneralSettingsView: View {
                 SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
                     hotkeySection
                 }
+                SettingsCard("Feedback", icon: "speaker.wave.2.fill") {
+                    feedbackSection
+                }
                 SettingsCard("Clipboard", icon: "doc.on.clipboard") {
                     clipboardSection
                 }
@@ -540,6 +543,22 @@ struct GeneralSettingsView: View {
             Text("FreeFlow will temporarily place the transcript on your clipboard to paste it, then restore whatever was there before. If you copy something else before the restore happens, FreeFlow leaves it alone.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Feedback
+
+    private var feedbackSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $appState.soundEffectsEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enable sound effects")
+                    Text("Plays audible cues when recording starts, stops, or hits an error.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
         }
     }
 

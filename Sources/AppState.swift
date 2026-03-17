@@ -101,6 +101,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let savedToggleCustomShortcutStorageKey = "saved_toggle_custom_shortcut"
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
+    private let soundEffectsEnabledStorageKey = "sound_effects_enabled"
     private let customSystemPromptStorageKey = "custom_system_prompt"
     private let customContextPromptStorageKey = "custom_context_prompt"
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
@@ -161,6 +162,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var customVocabulary: String {
         didSet {
             UserDefaults.standard.set(customVocabulary, forKey: customVocabularyStorageKey)
+        }
+    }
+
+    @Published var soundEffectsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(soundEffectsEnabled, forKey: soundEffectsEnabledStorageKey)
         }
     }
 
@@ -269,6 +276,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let savedToggleCustomShortcut = Self.loadShortcut(forKey: savedToggleCustomShortcutStorageKey)
             ?? (shortcuts.toggle.isCustom ? shortcuts.toggle : nil)
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
+        let soundEffectsEnabled = UserDefaults.standard.object(forKey: soundEffectsEnabledStorageKey) as? Bool ?? true
         let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
@@ -300,6 +308,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.savedHoldCustomShortcut = savedHoldCustomShortcut
         self.savedToggleCustomShortcut = savedToggleCustomShortcut
         self.customVocabulary = customVocabulary
+        self.soundEffectsEnabled = soundEffectsEnabled
         self.customSystemPrompt = customSystemPrompt
         self.customContextPrompt = customContextPrompt
         self.customSystemPromptLastModified = customSystemPromptLastModified
@@ -665,6 +674,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         hotkeyManager.start(configuration: ShortcutConfiguration(hold: holdShortcut, toggle: toggleShortcut))
     }
 
+    private func playSoundEffect(named name: String) {
+        guard soundEffectsEnabled else { return }
+        NSSound(named: name)?.play()
+    }
+
     private func handleShortcutEvent(_ event: ShortcutEvent) {
         guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
             return
@@ -830,7 +844,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.overlayManager.showRecording(mode: self.activeRecordingTriggerMode ?? triggerMode)
                 }
                 overlayShown = true
-                NSSound(named: "Tink")?.play()
+                self.playSoundEffect(named: "Tink")
             }
         }
 
@@ -947,7 +961,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Transcribing..."
         debugStatusMessage = "Transcribing audio"
         errorMessage = nil
-        NSSound(named: "Pop")?.play()
+        playSoundEffect(named: "Pop")
         overlayManager.slideUpToNotch { }
 
         transcribingIndicatorTask?.cancel()
@@ -1233,7 +1247,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             statusText = "Screenshot Required"
             overlayManager.dismiss()
 
-            NSSound(named: "Basso")?.play()
+            playSoundEffect(named: "Basso")
             showScreenshotPermissionAlert(message: message)
         }
         // Non-permission errors (transient failures) — continue recording without context
