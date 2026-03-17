@@ -550,15 +550,18 @@ struct GeneralSettingsView: View {
 
     private var feedbackSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle(isOn: $appState.soundEffectsEnabled) {
+            HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Enable sound effects")
+                        .font(.caption.weight(.semibold))
                     Text("Plays audible cues when recording starts, stops, or hits an error.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 12)
+                Toggle("", isOn: $appState.soundEffectsEnabled)
+                    .labelsHidden()
             }
-            .toggleStyle(.switch)
         }
     }
 
