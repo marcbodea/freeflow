@@ -234,6 +234,9 @@ struct GeneralSettingsView: View {
                 SettingsCard("Push-to-Talk Key", icon: "keyboard.fill") {
                     hotkeySection
                 }
+                SettingsCard("Feedback", icon: "speaker.wave.2.fill") {
+                    feedbackSection
+                }
                 SettingsCard("Microphone", icon: "mic.fill") {
                     microphoneSection
                 }
@@ -503,6 +506,22 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+        }
+    }
+
+    // MARK: Feedback
+
+    private var feedbackSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $appState.soundEffectsEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enable sound effects")
+                    Text("Plays audible cues when recording starts, stops, or hits an error.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
         }
     }
 
@@ -1608,4 +1627,3 @@ struct FlowLayout: Layout {
         return (CGSize(width: maxWidth, height: totalHeight), positions)
     }
 }
-

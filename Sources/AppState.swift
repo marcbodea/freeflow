@@ -39,6 +39,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let apiBaseURLStorageKey = "api_base_url"
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
+    private let soundEffectsEnabledStorageKey = "sound_effects_enabled"
     private let customSystemPromptStorageKey = "custom_system_prompt"
     private let customContextPromptStorageKey = "custom_context_prompt"
     private let customSystemPromptLastModifiedStorageKey = "custom_system_prompt_last_modified"
@@ -76,6 +77,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var customVocabulary: String {
         didSet {
             UserDefaults.standard.set(customVocabulary, forKey: customVocabularyStorageKey)
+        }
+    }
+
+    @Published var soundEffectsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(soundEffectsEnabled, forKey: soundEffectsEnabledStorageKey)
         }
     }
 
@@ -153,6 +160,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let apiBaseURL = Self.loadStoredAPIBaseURL(account: "api_base_url")
         let selectedHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? "fn") ?? .fnKey
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
+        let soundEffectsEnabled = UserDefaults.standard.object(forKey: soundEffectsEnabledStorageKey) as? Bool ?? true
         let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
         let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
         let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
@@ -178,6 +186,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.apiBaseURL = apiBaseURL
         self.selectedHotkey = selectedHotkey
         self.customVocabulary = customVocabulary
+        self.soundEffectsEnabled = soundEffectsEnabled
         self.customSystemPrompt = customSystemPrompt
         self.customContextPrompt = customContextPrompt
         self.customSystemPromptLastModified = customSystemPromptLastModified
@@ -407,6 +416,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         hotkeyManager.start(option: selectedHotkey)
     }
 
+    private func playSoundEffect(named name: String) {
+        guard soundEffectsEnabled else { return }
+        NSSound(named: name)?.play()
+    }
+
     private func handleHotkeyDown() {
         os_log(.info, log: recordingLog, "handleHotkeyDown() fired, isRecording=%{public}d, isTranscribing=%{public}d", isRecording, isTranscribing)
         guard !isRecording && !isTranscribing else { return }
@@ -503,7 +517,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.overlayManager.showRecording()
                 }
                 overlayShown = true
-                NSSound(named: "Tink")?.play()
+                self.playSoundEffect(named: "Tink")
             }
         }
 
@@ -614,7 +628,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Transcribing..."
         debugStatusMessage = "Transcribing audio"
         errorMessage = nil
-        NSSound(named: "Pop")?.play()
+        playSoundEffect(named: "Pop")
         overlayManager.slideUpToNotch { }
 
         transcribingIndicatorTask?.cancel()
@@ -895,7 +909,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             statusText = "Screenshot Required"
             overlayManager.dismiss()
 
-            NSSound(named: "Basso")?.play()
+            playSoundEffect(named: "Basso")
             showScreenshotPermissionAlert(message: message)
         }
         // Non-permission errors (transient failures) — continue recording without context
