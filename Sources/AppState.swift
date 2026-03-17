@@ -239,6 +239,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var selectedMicrophoneID: String {
         didSet {
             UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
+            if !isRecording {
+                audioRecorder.resetAudioEngine()
+            }
         }
     }
     @Published var availableMicrophones: [AudioDevice] = []
@@ -564,7 +567,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async {
-                self?.refreshAvailableMicrophones()
+                guard let self else { return }
+                self.refreshAvailableMicrophones()
+                if !self.isRecording {
+                    self.audioRecorder.resetAudioEngine()
+                }
             }
         }
         audioDeviceListenerBlock = block

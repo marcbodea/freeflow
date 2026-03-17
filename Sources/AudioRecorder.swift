@@ -130,6 +130,7 @@ class AudioRecorder: NSObject, ObservableObject {
     private var bufferCount: Int = 0
     private var currentDeviceUID: String?
     private var storedInputFormat: AVAudioFormat?
+    private var hasInstalledTap = false
 
     @Published var isRecording = false
     /// Thread-safe flag read from the audio tap callback.
@@ -161,9 +162,7 @@ class AudioRecorder: NSObject, ObservableObject {
         } else {
             // Tear down old engine if device changed
             if audioEngine != nil {
-                audioEngine?.inputNode.removeTap(onBus: 0)
-                audioEngine?.stop()
-                audioEngine = nil
+                tearDownEngine()
             }
 
             let engine = AVAudioEngine()
@@ -238,6 +237,7 @@ class AudioRecorder: NSObject, ObservableObject {
                 }
                 self.computeAudioLevel(from: buffer)
             }
+            hasInstalledTap = true
             os_log(.info, log: recordingLog, "tap installed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
             engine.prepare()
@@ -301,11 +301,20 @@ class AudioRecorder: NSObject, ObservableObject {
         smoothedLevel = 0.0
         DispatchQueue.main.async { self.audioLevel = 0.0 }
 
-        // Stop engine so mic indicator goes away — keep engine object for fast restart
-        audioEngine?.stop()
-        os_log(.info, log: recordingLog, "engine stopped (mic indicator off)")
+        // Fully release the engine so CoreAudio drops any stale input route state.
+        tearDownEngine()
+        os_log(.info, log: recordingLog, "engine torn down (audio route released)")
 
         return tempFileURL
+    }
+
+    func resetAudioEngine() {
+        _recording.withLock { $0 = false }
+        audioFileQueue.sync { audioFile = nil }
+        isRecording = false
+        smoothedLevel = 0.0
+        DispatchQueue.main.async { self.audioLevel = 0.0 }
+        tearDownEngine()
     }
 
     private func computeAudioLevel(from buffer: AVAudioPCMBuffer) {
@@ -347,9 +356,23 @@ class AudioRecorder: NSObject, ObservableObject {
     }
 
     func cleanup() {
+        tearDownEngine()
         if let url = tempFileURL {
             try? FileManager.default.removeItem(at: url)
             tempFileURL = nil
         }
+    }
+
+    private func tearDownEngine() {
+        guard let engine = audioEngine else { return }
+        if hasInstalledTap {
+            engine.inputNode.removeTap(onBus: 0)
+            hasInstalledTap = false
+        }
+        engine.stop()
+        engine.reset()
+        audioEngine = nil
+        currentDeviceUID = nil
+        storedInputFormat = nil
     }
 }
