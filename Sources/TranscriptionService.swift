@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import os.log
 
@@ -9,6 +10,8 @@ class TranscriptionService {
     private let forceHTTP2: Bool
     private let transcriptionModel = "whisper-large-v3"
     private let transcriptionTimeoutSeconds: TimeInterval = 20
+    private let uploadSampleRate = 16_000.0
+    private let uploadChannelCount: AVAudioChannelCount = 1
 
     init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", forceHTTP2: Bool = false) {
         self.apiKey = apiKey
@@ -65,6 +68,9 @@ class TranscriptionService {
     }
 
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
+        let preparedAudio = try prepareAudioForUpload(from: fileURL)
+        defer { preparedAudio.cleanup() }
+
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -72,10 +78,10 @@ class TranscriptionService {
         let boundary = UUID().uuidString
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        let audioData = try Data(contentsOf: fileURL)
+        let audioData = try Data(contentsOf: preparedAudio.fileURL)
         let body = makeMultipartBody(
             audioData: audioData,
-            fileName: fileURL.lastPathComponent,
+            fileName: preparedAudio.fileURL.lastPathComponent,
             model: transcriptionModel,
             boundary: boundary
         )
@@ -209,6 +215,142 @@ class TranscriptionService {
         return body
     }
 
+    private func prepareAudioForUpload(from fileURL: URL) throws -> PreparedUploadAudio {
+        let inputFile = try AVAudioFile(forReading: fileURL)
+        if isPreferredUploadFormat(file: inputFile, fileURL: fileURL) {
+            return PreparedUploadAudio(fileURL: fileURL, deleteOnCleanup: false)
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
+        try normalizeAudioForUpload(inputFile: inputFile, outputURL: outputURL)
+        return PreparedUploadAudio(fileURL: outputURL, deleteOnCleanup: true)
+    }
+
+    private func isPreferredUploadFormat(file: AVAudioFile, fileURL: URL) -> Bool {
+        let format = file.fileFormat
+        return fileURL.pathExtension.lowercased() == "wav"
+            && abs(format.sampleRate - uploadSampleRate) < 0.5
+            && format.channelCount == uploadChannelCount
+            && format.commonFormat == .pcmFormatInt16
+    }
+
+    private func normalizeAudioForUpload(inputFile: AVAudioFile, outputURL: URL) throws {
+        let inputFormat = inputFile.processingFormat
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: uploadSampleRate,
+            channels: uploadChannelCount,
+            interleaved: false
+        ) else {
+            throw TranscriptionError.audioPreparationFailed("Could not create normalized output format")
+        }
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            throw TranscriptionError.audioPreparationFailed("Could not create audio converter")
+        }
+
+        converter.sampleRateConverterQuality = AVAudioQuality.medium.rawValue
+
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: uploadSampleRate,
+            AVNumberOfChannelsKey: Int(uploadChannelCount),
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: true
+        ]
+        let outputFile = try AVAudioFile(
+            forWriting: outputURL,
+            settings: outputSettings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+
+        let inputFrameCapacity: AVAudioFrameCount = 4096
+        let outputFrameCapacity = AVAudioFrameCount(
+            ceil(Double(inputFrameCapacity) * outputFormat.sampleRate / inputFormat.sampleRate)
+        ) + 32
+
+        var reachedEndOfInput = false
+        var readError: Error?
+        var conversionError: NSError?
+
+        while true {
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: outputFrameCapacity
+            ) else {
+                throw TranscriptionError.audioPreparationFailed("Could not allocate normalized audio buffer")
+            }
+
+            let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
+                if reachedEndOfInput {
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                let remainingFrames = inputFile.length - inputFile.framePosition
+                guard remainingFrames > 0 else {
+                    reachedEndOfInput = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                let framesToRead = AVAudioFrameCount(min(Int64(inputFrameCapacity), remainingFrames))
+                guard let inputBuffer = AVAudioPCMBuffer(
+                    pcmFormat: inputFormat,
+                    frameCapacity: framesToRead
+                ) else {
+                    readError = TranscriptionError.audioPreparationFailed("Could not allocate source audio buffer")
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+
+                do {
+                    try inputFile.read(into: inputBuffer, frameCount: framesToRead)
+                } catch {
+                    readError = error
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+
+                if inputBuffer.frameLength == 0 {
+                    reachedEndOfInput = true
+                    outStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                outStatus.pointee = .haveData
+                return inputBuffer
+            }
+
+            if let readError {
+                throw TranscriptionError.audioPreparationFailed(readError.localizedDescription)
+            }
+            if let conversionError {
+                throw TranscriptionError.audioPreparationFailed(conversionError.localizedDescription)
+            }
+
+            switch status {
+            case .haveData:
+                try outputFile.write(from: outputBuffer)
+            case .inputRanDry:
+                continue
+            case .endOfStream:
+                if outputBuffer.frameLength > 0 {
+                    try outputFile.write(from: outputBuffer)
+                }
+                return
+            case .error:
+                throw TranscriptionError.audioPreparationFailed("Audio conversion failed")
+            @unknown default:
+                throw TranscriptionError.audioPreparationFailed("Unknown audio conversion status")
+            }
+        }
+    }
+
     private func parseTranscript(from data: Data) throws -> String {
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = json["text"] as? String {
@@ -234,6 +376,7 @@ enum TranscriptionError: LocalizedError {
     case transcriptionFailed(String)
     case transcriptionTimedOut(TimeInterval)
     case pollFailed(String)
+    case audioPreparationFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -242,6 +385,17 @@ enum TranscriptionError: LocalizedError {
         case .transcriptionTimedOut(let seconds): return "Transcription timed out after \(Int(seconds))s"
         case .transcriptionFailed(let msg): return "Transcription failed: \(msg)"
         case .pollFailed(let msg): return "Polling failed: \(msg)"
+        case .audioPreparationFailed(let msg): return "Audio preparation failed: \(msg)"
         }
+    }
+}
+
+private struct PreparedUploadAudio {
+    let fileURL: URL
+    let deleteOnCleanup: Bool
+
+    func cleanup() {
+        guard deleteOnCleanup else { return }
+        try? FileManager.default.removeItem(at: fileURL)
     }
 }
