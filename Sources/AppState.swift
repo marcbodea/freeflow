@@ -1131,13 +1131,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(
-            apiKey: apiKey,
-            baseURL: apiBaseURL,
-            forceHTTP2: forceHTTP2Transcription
-        )
-        let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
-
         Task {
             do {
                 let appContext: AppContext
@@ -1304,7 +1297,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         context: AppContext,
         customVocabulary: String
     ) async throws -> TranscriptionAttemptResult {
-        let transcriptionService = TranscriptionService(apiKey: apiKey, baseURL: apiBaseURL)
+        let transcriptionService = TranscriptionService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            forceHTTP2: forceHTTP2Transcription
+        )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
 
         let rawTranscript = try await transcriptionService.transcribe(fileURL: fileURL)
@@ -1574,13 +1571,6 @@ final class AppState: ObservableObject, @unchecked Sendable {
             completion?()
         }
     }
-}
-
-private struct TranscriptionAttemptResult {
-    let rawTranscript: String
-    let finalTranscript: String
-    let postProcessingPrompt: String
-    let processingStatus: String
 }
 
 private struct TranscriptionAttemptResult {
