@@ -143,6 +143,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var isDebugOverlayActive = false
     @Published var selectedSettingsTab: SettingsTab? = .general
     @Published var pipelineHistory: [PipelineHistoryItem] = []
+    @Published var retryingHistoryEntryID: UUID?
     @Published var debugStatusMessage = "Idle"
     @Published var lastRawTranscript = ""
     @Published var lastPostProcessedTranscript = ""
@@ -394,6 +395,146 @@ final class AppState: ObservableObject, @unchecked Sendable {
             pipelineHistory.remove(at: index)
         } catch {
             errorMessage = "Unable to delete run history entry: \(error.localizedDescription)"
+        }
+    }
+
+    var mostRecentRetryableFailedRun: PipelineHistoryItem? {
+        pipelineHistory.first(where: isRetryableFailedRun(_:))
+    }
+
+    func isRetryableFailedRun(_ item: PipelineHistoryItem) -> Bool {
+        item.postProcessingStatus.hasPrefix("Error:") && item.audioFileName != nil
+    }
+
+    func retryFailedTranscription(for item: PipelineHistoryItem) {
+        guard !isRecording, !isTranscribing else { return }
+        guard isRetryableFailedRun(item) else {
+            errorMessage = "This run does not have saved audio available for retry."
+            return
+        }
+        guard let audioFileName = item.audioFileName else {
+            errorMessage = "This run does not have saved audio available for retry."
+            return
+        }
+
+        let audioURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            errorMessage = "Saved audio for this run could not be found."
+            return
+        }
+
+        let retryContext = historicalContext(for: item)
+        retryingHistoryEntryID = item.id
+        isTranscribing = true
+        statusText = "Retrying transcription..."
+        debugStatusMessage = "Retrying transcription"
+        errorMessage = nil
+        lastTranscript = ""
+        lastRawTranscript = item.rawTranscript
+        lastPostProcessedTranscript = item.postProcessedTranscript
+        lastPostProcessingPrompt = item.postProcessingPrompt ?? ""
+        lastContextSummary = item.contextSummary
+        lastPostProcessingStatus = "Retrying transcription..."
+        lastContextScreenshotDataURL = item.contextScreenshotDataURL
+        lastContextScreenshotStatus = item.contextScreenshotStatus
+        updatePipelineHistoryEntry(
+            PipelineHistoryItem(
+                id: item.id,
+                timestamp: Date(),
+                rawTranscript: item.rawTranscript,
+                postProcessedTranscript: item.postProcessedTranscript,
+                postProcessingPrompt: item.postProcessingPrompt,
+                contextSummary: item.contextSummary,
+                contextPrompt: item.contextPrompt,
+                contextScreenshotDataURL: item.contextScreenshotDataURL,
+                contextScreenshotStatus: item.contextScreenshotStatus,
+                postProcessingStatus: "Retrying transcription...",
+                debugStatus: "Retrying transcription",
+                customVocabulary: item.customVocabulary,
+                audioFileName: audioFileName
+            )
+        )
+
+        Task {
+            do {
+                let result = try await transcribeAudioFile(
+                    audioURL,
+                    context: retryContext,
+                    customVocabulary: item.customVocabulary
+                )
+                await MainActor.run {
+                    self.retryingHistoryEntryID = nil
+                    self.isTranscribing = false
+                    self.debugStatusMessage = "Done"
+                    self.lastRawTranscript = result.rawTranscript
+                    self.lastPostProcessedTranscript = result.finalTranscript
+                    self.lastPostProcessingPrompt = result.postProcessingPrompt
+                    self.lastContextSummary = item.contextSummary
+                    self.lastPostProcessingStatus = result.processingStatus
+                    self.lastContextScreenshotDataURL = item.contextScreenshotDataURL
+                    self.lastContextScreenshotStatus = item.contextScreenshotStatus
+                    self.lastTranscript = result.finalTranscript
+                    self.statusText = result.finalTranscript.isEmpty ? "Nothing to transcribe" : "Retry complete"
+                    self.errorMessage = nil
+                    self.updatePipelineHistoryEntry(
+                        PipelineHistoryItem(
+                            id: item.id,
+                            timestamp: Date(),
+                            rawTranscript: result.rawTranscript,
+                            postProcessedTranscript: result.finalTranscript,
+                            postProcessingPrompt: result.postProcessingPrompt,
+                            contextSummary: item.contextSummary,
+                            contextPrompt: item.contextPrompt,
+                            contextScreenshotDataURL: item.contextScreenshotDataURL,
+                            contextScreenshotStatus: item.contextScreenshotStatus,
+                            postProcessingStatus: result.processingStatus,
+                            debugStatus: "Retry complete",
+                            customVocabulary: item.customVocabulary,
+                            audioFileName: audioFileName
+                        )
+                    )
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        if self.statusText == "Retry complete" || self.statusText == "Nothing to transcribe" {
+                            self.statusText = "Ready"
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    let errorStatus = "Error: \(error.localizedDescription)"
+                    self.retryingHistoryEntryID = nil
+                    self.isTranscribing = false
+                    self.debugStatusMessage = "Retry failed"
+                    self.errorMessage = "Retry failed: \(error.localizedDescription)"
+                    self.statusText = "Error"
+                    self.lastTranscript = ""
+                    self.lastRawTranscript = item.rawTranscript
+                    self.lastPostProcessedTranscript = item.postProcessedTranscript
+                    self.lastPostProcessingPrompt = item.postProcessingPrompt ?? ""
+                    self.lastContextSummary = item.contextSummary
+                    self.lastPostProcessingStatus = errorStatus
+                    self.lastContextScreenshotDataURL = item.contextScreenshotDataURL
+                    self.lastContextScreenshotStatus = item.contextScreenshotStatus
+                    self.updatePipelineHistoryEntry(
+                        PipelineHistoryItem(
+                            id: item.id,
+                            timestamp: Date(),
+                            rawTranscript: item.rawTranscript,
+                            postProcessedTranscript: item.postProcessedTranscript,
+                            postProcessingPrompt: item.postProcessingPrompt,
+                            contextSummary: item.contextSummary,
+                            contextPrompt: item.contextPrompt,
+                            contextScreenshotDataURL: item.contextScreenshotDataURL,
+                            contextScreenshotStatus: item.contextScreenshotStatus,
+                            postProcessingStatus: errorStatus,
+                            debugStatus: "Retry failed",
+                            customVocabulary: item.customVocabulary,
+                            audioFileName: audioFileName
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -886,13 +1027,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(apiKey: apiKey, baseURL: apiBaseURL)
-        let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
-
         Task {
             do {
-                async let transcript = transcriptionService.transcribe(fileURL: fileURL)
-                let rawTranscript = try await transcript
                 let appContext: AppContext
                 if let sessionContext {
                     appContext = sessionContext
@@ -904,50 +1040,35 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 await MainActor.run { [weak self] in
                     self?.debugStatusMessage = "Running post-processing"
                 }
-                let finalTranscript: String
-                let processingStatus: String
-                let postProcessingPrompt: String
-                do {
-                    let postProcessingResult = try await postProcessingService.postProcess(
-                        transcript: rawTranscript,
-                        context: appContext,
-                        customVocabulary: customVocabulary,
-                        customSystemPrompt: customSystemPrompt
-                    )
-                    finalTranscript = postProcessingResult.transcript
-                    processingStatus = "Post-processing succeeded"
-                    postProcessingPrompt = postProcessingResult.prompt
-                } catch {
-                    finalTranscript = rawTranscript
-                    processingStatus = "Post-processing failed, using raw transcript"
-                    postProcessingPrompt = ""
-                }
+                let result = try await transcribeAudioFile(
+                    fileURL,
+                    context: appContext,
+                    customVocabulary: customVocabulary
+                )
                 await MainActor.run {
                     self.lastContextSummary = appContext.contextSummary
                     self.lastContextScreenshotDataURL = appContext.screenshotDataURL
                     self.lastContextScreenshotStatus = appContext.screenshotError
                         ?? "available (\(appContext.screenshotMimeType ?? "image"))"
-                    let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let trimmedFinalTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.lastPostProcessingPrompt = postProcessingPrompt
-                    self.lastRawTranscript = trimmedRawTranscript
-                    self.lastPostProcessedTranscript = trimmedFinalTranscript
-                    self.lastPostProcessingStatus = processingStatus
+                    self.lastPostProcessingPrompt = result.postProcessingPrompt
+                    self.lastRawTranscript = result.rawTranscript
+                    self.lastPostProcessedTranscript = result.finalTranscript
+                    self.lastPostProcessingStatus = result.processingStatus
                     self.recordPipelineHistoryEntry(
-                        rawTranscript: trimmedRawTranscript,
-                        postProcessedTranscript: trimmedFinalTranscript,
-                        postProcessingPrompt: postProcessingPrompt,
+                        rawTranscript: result.rawTranscript,
+                        postProcessedTranscript: result.finalTranscript,
+                        postProcessingPrompt: result.postProcessingPrompt,
                         context: appContext,
-                        processingStatus: processingStatus,
+                        processingStatus: result.processingStatus,
                         audioFileName: savedAudioFileName
                     )
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
-                    self.lastTranscript = trimmedFinalTranscript
+                    self.lastTranscript = result.finalTranscript
                     self.isTranscribing = false
                     self.debugStatusMessage = "Done"
 
-                    if trimmedFinalTranscript.isEmpty {
+                    if result.finalTranscript.isEmpty {
                         self.statusText = "Nothing to transcribe"
                         self.overlayManager.dismiss()
                     } else {
@@ -958,7 +1079,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         }
 
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
+                        NSPasteboard.general.setString(result.finalTranscript, forType: .string)
 
                         self.pasteAtCursorWhenShortcutReleased()
                     }
@@ -1041,6 +1162,76 @@ final class AppState: ObservableObject, @unchecked Sendable {
         } catch {
             errorMessage = "Unable to save run history entry: \(error.localizedDescription)"
         }
+    }
+
+    private func updatePipelineHistoryEntry(_ item: PipelineHistoryItem) {
+        do {
+            try pipelineHistoryStore.update(item)
+            pipelineHistory = pipelineHistoryStore.loadAllHistory()
+        } catch {
+            errorMessage = "Unable to update run history entry: \(error.localizedDescription)"
+        }
+    }
+
+    private func historicalContext(for item: PipelineHistoryItem) -> AppContext {
+        AppContext(
+            appName: nil,
+            bundleIdentifier: nil,
+            windowTitle: nil,
+            selectedText: nil,
+            currentActivity: item.contextSummary,
+            contextPrompt: item.contextPrompt,
+            screenshotDataURL: item.contextScreenshotDataURL,
+            screenshotMimeType: Self.mimeType(from: item.contextScreenshotDataURL),
+            screenshotError: item.contextScreenshotStatus.hasPrefix("available") ? nil : item.contextScreenshotStatus
+        )
+    }
+
+    private func transcribeAudioFile(
+        _ fileURL: URL,
+        context: AppContext,
+        customVocabulary: String
+    ) async throws -> TranscriptionAttemptResult {
+        let transcriptionService = TranscriptionService(apiKey: apiKey, baseURL: apiBaseURL)
+        let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
+
+        let rawTranscript = try await transcriptionService.transcribe(fileURL: fileURL)
+        let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            let postProcessingResult = try await postProcessingService.postProcess(
+                transcript: rawTranscript,
+                context: context,
+                customVocabulary: customVocabulary,
+                customSystemPrompt: customSystemPrompt
+            )
+            return TranscriptionAttemptResult(
+                rawTranscript: trimmedRawTranscript,
+                finalTranscript: postProcessingResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                postProcessingPrompt: postProcessingResult.prompt,
+                processingStatus: "Post-processing succeeded"
+            )
+        } catch {
+            return TranscriptionAttemptResult(
+                rawTranscript: trimmedRawTranscript,
+                finalTranscript: trimmedRawTranscript,
+                postProcessingPrompt: "",
+                processingStatus: "Post-processing failed, using raw transcript"
+            )
+        }
+    }
+
+    private static func mimeType(from dataURL: String?) -> String? {
+        guard
+            let dataURL,
+            dataURL.hasPrefix("data:"),
+            let separatorIndex = dataURL.firstIndex(of: ";")
+        else {
+            return nil
+        }
+
+        let prefixEnd = dataURL.index(dataURL.startIndex, offsetBy: 5)
+        return String(dataURL[prefixEnd..<separatorIndex])
     }
 
     private func startContextCapture() {
@@ -1249,4 +1440,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             self?.pasteAtCursor()
         }
     }
+}
+
+private struct TranscriptionAttemptResult {
+    let rawTranscript: String
+    let finalTranscript: String
+    let postProcessingPrompt: String
+    let processingStatus: String
 }

@@ -80,6 +80,18 @@ struct MenuBarView: View {
             }
             .disabled(appState.isTranscribing)
 
+            if let failedRun = appState.mostRecentRetryableFailedRun {
+                Button(appState.retryingHistoryEntryID == failedRun.id ? "Retrying Failed Transcription..." : "Retry Failed Transcription") {
+                    appState.retryFailedTranscription(for: failedRun)
+                }
+                .disabled(appState.isTranscribing || appState.isRecording)
+
+                Button("Open Run Log") {
+                    appState.selectedSettingsTab = .runLog
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
+                }
+            }
+
             if let error = appState.errorMessage {
                 Divider()
                 Text(error)

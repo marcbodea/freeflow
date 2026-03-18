@@ -1145,7 +1145,7 @@ struct RunLogView: View {
                 Button("Clear History") {
                     appState.clearPipelineHistory()
                 }
-                .disabled(appState.pipelineHistory.isEmpty)
+                .disabled(appState.pipelineHistory.isEmpty || appState.retryingHistoryEntryID != nil)
             }
             .padding(.horizontal, 24)
             .padding(.top, 20)
@@ -1188,6 +1188,14 @@ struct RunLogEntryView: View {
         item.postProcessingStatus.hasPrefix("Error:")
     }
 
+    private var canRetry: Bool {
+        appState.isRetryableFailedRun(item)
+    }
+
+    private var isRetrying: Bool {
+        appState.retryingHistoryEntryID == item.id
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Collapsed header
@@ -1222,6 +1230,21 @@ struct RunLogEntryView: View {
                 }
                 .buttonStyle(.plain)
 
+                if isError {
+                    Button {
+                        appState.retryFailedTranscription(for: item)
+                    } label: {
+                        Image(systemName: isRetrying ? "arrow.trianglehead.2.clockwise.rotate.90" : "arrow.clockwise")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(canRetry ? Color.accentColor : .secondary)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRetry || appState.isTranscribing)
+                    .help(canRetry ? "Retry this transcription" : "No saved audio available to retry")
+                }
+
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         appState.deleteHistoryEntry(id: item.id)
@@ -1234,6 +1257,7 @@ struct RunLogEntryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(isRetrying)
                 .help("Delete this run")
             }
             .padding(12)
@@ -1253,6 +1277,17 @@ struct RunLogEntryView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Text("No audio recorded")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if isError && !canRetry {
+                        HStack(spacing: 6) {
+                            Image(systemName: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Retry is unavailable because this run has no saved audio.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
