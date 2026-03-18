@@ -348,6 +348,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         persistShortcut(binding, key: key)
     }
 
+    struct SavedAudioFile {
+        let fileName: String
+        let fileURL: URL
+    }
+
     static func audioStorageDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
@@ -358,12 +363,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return audioDir
     }
 
-    static func saveAudioFile(from tempURL: URL) -> String? {
-        let fileName = UUID().uuidString + "." + tempURL.pathExtension
+    static func saveAudioFile(from tempURL: URL) -> SavedAudioFile? {
+        let fileName = UUID().uuidString + ".wav"
         let destURL = audioStorageDirectory().appendingPathComponent(fileName)
         do {
-            try FileManager.default.copyItem(at: tempURL, to: destURL)
-            return fileName
+            try AudioNormalization.writePreferredAudioCopy(from: tempURL, to: destURL)
+            return SavedAudioFile(fileName: fileName, fileURL: destURL)
         } catch {
             return nil
         }
@@ -1005,7 +1010,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             overlayManager.dismiss()
             return
         }
-        let savedAudioFileName = Self.saveAudioFile(from: fileURL)
+        let savedAudioFile = Self.saveAudioFile(from: fileURL)
+        let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
@@ -1041,7 +1047,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self?.debugStatusMessage = "Running post-processing"
                 }
                 let result = try await transcribeAudioFile(
-                    fileURL,
+                    transcriptionFileURL,
                     context: appContext,
                     customVocabulary: customVocabulary
                 )
@@ -1060,7 +1066,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         postProcessingPrompt: result.postProcessingPrompt,
                         context: appContext,
                         processingStatus: result.processingStatus,
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFile?.fileName
                     )
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
@@ -1123,7 +1129,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         postProcessingPrompt: "",
                         context: resolvedContext,
                         processingStatus: "Error: \(error.localizedDescription)",
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFile?.fileName
                     )
                 }
             }
