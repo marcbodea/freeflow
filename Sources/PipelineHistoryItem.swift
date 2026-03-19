@@ -13,6 +13,7 @@ struct PipelineHistoryItem: Identifiable, Codable {
     let postProcessingStatus: String
     let debugStatus: String
     let customVocabulary: String
+    let transcriptionModel: String
     let audioFileName: String?
 
     init(
@@ -28,6 +29,7 @@ struct PipelineHistoryItem: Identifiable, Codable {
         postProcessingStatus: String,
         debugStatus: String,
         customVocabulary: String,
+        transcriptionModel: String = TranscriptionModel.whisperLargeV3.rawValue,
         audioFileName: String? = nil
     ) {
         self.id = id
@@ -42,6 +44,7 @@ struct PipelineHistoryItem: Identifiable, Codable {
         self.postProcessingStatus = postProcessingStatus
         self.debugStatus = debugStatus
         self.customVocabulary = customVocabulary
+        self.transcriptionModel = transcriptionModel
         self.audioFileName = audioFileName
     }
 }

@@ -109,6 +109,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
+    private let transcriptionModelStorageKey = "transcription_model"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
@@ -202,6 +203,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var transcriptionModel: TranscriptionModel {
+        didSet {
+            UserDefaults.standard.set(transcriptionModel.rawValue, forKey: transcriptionModelStorageKey)
+        }
+    }
+
     @Published var shortcutStartDelay: TimeInterval {
         didSet {
             UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
@@ -288,6 +295,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
         let preserveClipboard = UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
         let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
+        let transcriptionModel = TranscriptionModel(
+            rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
+        ) ?? .whisperLargeV3
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
         var removedAudioFileNames: [String] = []
@@ -320,6 +330,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.shortcutStartDelay = shortcutStartDelay
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
+        self.transcriptionModel = transcriptionModel
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
@@ -545,6 +556,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 postProcessingStatus: "Retrying transcription...",
                 debugStatus: "Retrying transcription",
                 customVocabulary: item.customVocabulary,
+                transcriptionModel: transcriptionModel.rawValue,
                 audioFileName: audioFileName
             )
         )
@@ -584,6 +596,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             postProcessingStatus: result.processingStatus,
                             debugStatus: "Retry complete",
                             customVocabulary: item.customVocabulary,
+                            transcriptionModel: self.transcriptionModel.rawValue,
                             audioFileName: audioFileName
                         )
                     )
@@ -624,6 +637,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             postProcessingStatus: errorStatus,
                             debugStatus: "Retry failed",
                             customVocabulary: item.customVocabulary,
+                            transcriptionModel: self.transcriptionModel.rawValue,
                             audioFileName: audioFileName
                         )
                     )
@@ -1256,6 +1270,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             postProcessingStatus: processingStatus,
             debugStatus: debugStatusMessage,
             customVocabulary: customVocabulary,
+            transcriptionModel: transcriptionModel.rawValue,
             audioFileName: audioFileName
         )
         do {
@@ -1300,6 +1315,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionService = TranscriptionService(
             apiKey: apiKey,
             baseURL: apiBaseURL,
+            transcriptionModel: transcriptionModel,
             forceHTTP2: forceHTTP2Transcription
         )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
