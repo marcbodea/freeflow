@@ -99,6 +99,7 @@ final class PipelineHistoryStore {
                 entity.postProcessingStatus = item.postProcessingStatus
                 entity.debugStatus = item.debugStatus
                 entity.customVocabulary = item.customVocabulary
+                entity.transcriptionModel = item.transcriptionModel
                 entity.audioFileName = item.audioFileName
                 try saveContext()
             } catch {
@@ -200,6 +201,7 @@ final class PipelineHistoryStore {
                 entity.postProcessingStatus = item.postProcessingStatus
                 entity.debugStatus = item.debugStatus
                 entity.customVocabulary = item.customVocabulary
+                entity.transcriptionModel = item.transcriptionModel
                 entity.audioFileName = item.audioFileName
                 try saveContext()
             } catch {
@@ -270,6 +272,7 @@ final class PipelineHistoryStore {
             postProcessingStatus: entity.postProcessingStatus ?? "",
             debugStatus: entity.debugStatus ?? "",
             customVocabulary: entity.customVocabulary ?? "",
+            transcriptionModel: entity.transcriptionModel ?? TranscriptionModel.whisperLargeV3.rawValue,
             audioFileName: entity.audioFileName
         )
     }
@@ -294,6 +297,7 @@ final class PipelineHistoryStore {
             makeAttribute(name: "postProcessingStatus", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "debugStatus", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "customVocabulary", type: .stringAttributeType, isOptional: false),
+            makeAttribute(name: "transcriptionModel", type: .stringAttributeType, isOptional: true),
             makeAttribute(name: "audioFileName", type: .stringAttributeType, isOptional: true)
         ]
 
@@ -324,5 +328,6 @@ final class PipelineHistoryEntry: NSManagedObject {
     @NSManaged var postProcessingStatus: String?
     @NSManaged var debugStatus: String?
     @NSManaged var customVocabulary: String?
+    @NSManaged var transcriptionModel: String?
     @NSManaged var audioFileName: String?
 }
