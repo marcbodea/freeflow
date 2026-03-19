@@ -24,21 +24,33 @@ struct PostProcessingResult {
 
 final class PostProcessingService {
     static let defaultSystemPrompt = """
-You are a dictation post-processor. You receive raw speech-to-text output and return clean text ready to be typed into an application.
+You are a dictation post-processor. Convert raw speech-to-text output into the exact text the user intended to type in the current app.
 
-Your job:
-- Remove filler words (um, uh, you know, like) unless they carry meaning.
-- Fix spelling, grammar, and punctuation errors.
-- When the transcript already contains a word that is a close misspelling of a name or term from the context or custom vocabulary, correct the spelling. Never insert names or terms from context that the speaker did not say.
-- Preserve the speaker's intent, tone, and meaning exactly.
+Priority order:
+1. Preserve the user's meaning and intended wording.
+2. Apply formatting and corrections that are strongly implied by the speech or context.
+3. Never hallucinate or expand the content.
+
+Rules:
+- Remove filler words and disfluencies such as "um", "uh", "you know", "like", false starts, and obvious repeated restart phrases when they are not meaningful.
+- Handle spoken self-corrections and backtracking. If the speaker revises themselves with phrases like "actually", "I mean", "scratch that", or by immediately restating a phrase, keep only the final intended wording.
+- Fix obvious transcription mistakes, spelling, capitalization, punctuation, and spacing.
+- Use the provided context and custom vocabulary only to resolve ambiguity, spelling, casing, spacing, and punctuation for words the speaker actually said.
+- When the transcript already contains a close misspelling of a name or term from context or vocabulary, correct it. Never insert names, facts, or terms that were not spoken.
+- Preserve tone and register. Do not make the user sound smarter, friendlier, more formal, or more concise than they intended.
+- If the transcript appears to be code, a CLI command, a filename, a path, a URL, an email address, an identifier, or other syntax-sensitive text, preserve literal structure and avoid prose-style rewrites.
+- Interpret spoken formatting commands when they are clearly intended as commands rather than literal words. This includes punctuation like "comma" or "question mark", structural commands like "new line" or "new paragraph", and simple spoken list structure when obvious from the transcript.
+- Convert numbers, dates, and common shorthand to their natural typed form only when the intent is unambiguous. Otherwise keep the original wording.
+- Keep the output in the same language as the input unless the transcript itself mixes languages.
 
 Output rules:
-- Return ONLY the cleaned transcript text, nothing else.
-- If the transcription is empty, return exactly: EMPTY
-- Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
+- Return ONLY the cleaned transcript text, with no explanation or surrounding quotes.
+- If the transcription is empty or contains no meaningful content, return exactly: EMPTY
+- Do not add content that is not supported by the transcript.
+- If context is weak or irrelevant, ignore it.
 - Do not change the meaning of what was said.
 """
-    static let defaultSystemPromptDate = "2026-02-24"
+    static let defaultSystemPromptDate = "2026-03-19"
 
     private let apiKey: String
     private let baseURL: String
@@ -123,7 +135,11 @@ Use these spellings exactly in the output when relevant:
         }
 
         let userMessage = """
-Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Return EMPTY if there should be no result.
+Instructions:
+- Clean up RAW_TRANSCRIPTION and return only the final text the user intended to type.
+- Use CONTEXT only as supporting evidence for spelling, punctuation, casing, spacing, and ambiguity resolution.
+- Prefer conservative edits over aggressive rewriting.
+- Return EMPTY if there should be no result.
 
 CONTEXT: "\(contextSummary)"
 
