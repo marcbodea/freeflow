@@ -564,7 +564,7 @@ final class UpdateManager: ObservableObject {
             try Task.checkCancellation()
             buffer.append(byte)
             if buffer.count >= bufferSize {
-                outputHandle.write(buffer)
+                try outputHandle.write(contentsOf: buffer)
                 receivedBytes += buffer.count
                 buffer.removeAll(keepingCapacity: true)
 
@@ -580,7 +580,7 @@ final class UpdateManager: ObservableObject {
             if Task.isCancelled {
                 throw CancellationError()
             }
-            outputHandle.write(buffer)
+            try outputHandle.write(contentsOf: buffer)
         }
     }
 
