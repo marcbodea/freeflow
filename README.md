@@ -1,4 +1,9 @@
 <p align="center">
+  This repository is a fork of FreeFlow with additional features and bug fixes.<br>
+  Huge thanks to <a href="https://github.com/zachlatta">Zach Latta</a> for creating and open-sourcing the original project.
+</p>
+
+<p align="center">
   <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="FreeFlow icon">
 </p>
 
@@ -6,11 +11,6 @@
 
 <p align="center">
   Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
-</p>
-
-<p align="center">
-  This repository is the independently maintained continuation of FreeFlow.<br>
-  Huge thanks to <a href="https://github.com/zachlatta">Zach Latta</a> for creating and open-sourcing the original project.
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@ One of the cool features is that it's context aware. If you're replying to an em
 
 An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
 
-Going forward, new fixes, improvements, and releases will be maintained in this fork.
+This fork includes additional fixes and improvements while staying thankful to the original project and its creator.
 
 ### FAQ
 
