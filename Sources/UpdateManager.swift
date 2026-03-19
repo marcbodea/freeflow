@@ -55,6 +55,21 @@ private enum UpdateDownloadError: LocalizedError {
     }
 }
 
+private actor DownloadProgressReporter {
+    weak var manager: UpdateManager?
+
+    init(manager: UpdateManager) {
+        self.manager = manager
+    }
+
+    func update(_ progress: Double) async {
+        let manager = self.manager
+        await MainActor.run {
+            manager?.downloadProgress = progress
+        }
+    }
+}
+
 // MARK: - Update Manager
 
 @MainActor
@@ -104,6 +119,11 @@ final class UpdateManager: ObservableObject {
 
     private var releasesURL: URL {
         buildInfo.latestReleaseAPIURL
+    }
+
+    private struct ReleaseVersionIdentity: Equatable {
+        let version: String
+        let buildNumber: String
     }
 
     init(buildInfo: BuildInfo = .current, session: URLSession = .shared) {
@@ -159,8 +179,6 @@ final class UpdateManager: ObservableObject {
             return
         }
 
-        let currentBuildTag = buildInfo.buildTag
-
         isChecking = true
         defer { isChecking = false }
 
@@ -212,7 +230,7 @@ final class UpdateManager: ObservableObject {
             let releaseDateString = dateFormatter.string(from: publishedDate)
 
             // If this is the same build we're running, no update available
-            if let currentTag = currentBuildTag, release.tagName == currentTag {
+            if isSameRelease(as: release) {
                 updateAvailable = false
                 latestRelease = nil
                 if userInitiated { showUpToDateAlert() }
@@ -384,50 +402,15 @@ final class UpdateManager: ObservableObject {
                 fm.createFile(atPath: dmgPath.path, contents: nil)
                 return dmgPath
             }())
+            let progressReporter = DownloadProgressReporter(manager: self)
 
-            let mgr = self
-            let downloadTask = Task {
-                defer { try? outputHandle.close() }
-                var receivedBytes = 0
-                let bufferSize = 65_536
-                var buffer = Data()
-                buffer.reserveCapacity(bufferSize)
-                var lastProgressUpdate = CFAbsoluteTimeGetCurrent()
-
-                for try await byte in asyncBytes {
-                    if Task.isCancelled {
-                        throw CancellationError()
-                    }
-                    try Task.checkCancellation()
-                    buffer.append(byte)
-                    if buffer.count >= bufferSize {
-                        outputHandle.write(buffer)
-                        receivedBytes += buffer.count
-                        buffer.removeAll(keepingCapacity: true)
-
-                        // Throttle progress updates to ~30fps
-                        let now = CFAbsoluteTimeGetCurrent()
-                        if totalSize > 0 && (now - lastProgressUpdate) >= 0.033 {
-                            lastProgressUpdate = now
-                            let progress = Double(receivedBytes) / Double(totalSize)
-                            await MainActor.run {
-                                mgr.downloadProgress = progress
-                            }
-                        }
-                    }
-                }
-
-                // Write remaining bytes
-                if !buffer.isEmpty {
-                    if Task.isCancelled {
-                        throw CancellationError()
-                    }
-                    outputHandle.write(buffer)
-                    receivedBytes += buffer.count
-                }
+            try await Self.writeDownloadedBytes(
+                asyncBytes,
+                to: outputHandle,
+                totalSize: totalSize
+            ) { progress in
+                await progressReporter.update(progress)
             }
-
-            try await downloadTask.value
             downloadProgress = 1.0
 
         } catch is CancellationError {
@@ -527,6 +510,78 @@ final class UpdateManager: ObservableObject {
         throw NSError(domain: "UpdateManager", code: 3, userInfo: [
             NSLocalizedDescriptionKey: "No mount point found in hdiutil output"
         ])
+    }
+
+    private func isSameRelease(as release: GitHubRelease) -> Bool {
+        if let currentBuildTag = buildInfo.buildTag {
+            return release.tagName == currentBuildTag
+        }
+
+        guard buildInfo.updateChannel == .release else { return false }
+        guard let currentVersionIdentity = currentReleaseVersionIdentity else { return false }
+        guard let releaseVersionIdentity = Self.releaseVersionIdentity(from: release.tagName) else {
+            NSLog("Unable to compare release %@ because FreeFlowBuildTag is unset and the tag is not in vX.Y.Z-bN format.", release.tagName)
+            return false
+        }
+
+        return releaseVersionIdentity == currentVersionIdentity
+    }
+
+    private var currentReleaseVersionIdentity: ReleaseVersionIdentity? {
+        let version = buildInfo.version.trimmingCharacters(in: .whitespacesAndNewlines)
+        let buildNumber = buildInfo.buildNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !version.isEmpty, !buildNumber.isEmpty else { return nil }
+        return ReleaseVersionIdentity(version: version, buildNumber: buildNumber)
+    }
+
+    nonisolated private static func releaseVersionIdentity(from tagName: String) -> ReleaseVersionIdentity? {
+        let pattern = /^v(?<version>\d+\.\d+\.\d+)-b(?<build>\d+)$/
+        guard let match = tagName.wholeMatch(of: pattern) else { return nil }
+        return ReleaseVersionIdentity(
+            version: String(match.output.version),
+            buildNumber: String(match.output.build)
+        )
+    }
+
+    nonisolated private static func writeDownloadedBytes(
+        _ asyncBytes: URLSession.AsyncBytes,
+        to outputHandle: FileHandle,
+        totalSize: Int,
+        progressHandler: @escaping @Sendable (Double) async -> Void
+    ) async throws {
+        defer { try? outputHandle.close() }
+
+        var receivedBytes = 0
+        let bufferSize = 65_536
+        var buffer = Data()
+        buffer.reserveCapacity(bufferSize)
+        var lastProgressUpdate = CFAbsoluteTimeGetCurrent()
+
+        for try await byte in asyncBytes {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
+            buffer.append(byte)
+            if buffer.count >= bufferSize {
+                outputHandle.write(buffer)
+                receivedBytes += buffer.count
+                buffer.removeAll(keepingCapacity: true)
+
+                let now = CFAbsoluteTimeGetCurrent()
+                if totalSize > 0 && (now - lastProgressUpdate) >= 0.033 {
+                    lastProgressUpdate = now
+                    await progressHandler(Double(receivedBytes) / Double(totalSize))
+                }
+            }
+        }
+
+        if !buffer.isEmpty {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            outputHandle.write(buffer)
+        }
     }
 
     private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) {

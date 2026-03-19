@@ -553,6 +553,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func deleteHistoryEntry(id: UUID) {
         guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
+        guard usesPersistentState else {
+            pipelineHistory.remove(at: index)
+            return
+        }
         do {
             if let audioFileName = try pipelineHistoryStore.delete(id: id) {
                 Self.deleteAudioFile(audioFileName)

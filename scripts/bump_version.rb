@@ -10,12 +10,20 @@ build_match = content.match(/^CURRENT_PROJECT_VERSION = (.+)$/)
 abort("Failed to find MARKETING_VERSION in #{config_path}") unless marketing_match
 abort("Failed to find CURRENT_PROJECT_VERSION in #{config_path}") unless build_match
 
+parse_semver = lambda do |version, label|
+  unless version.match?(/\A\d+\.\d+\.\d+\z/)
+    abort("#{label} must use X.Y.Z format, got #{version.inspect}")
+  end
+
+  version.split(".").map { |segment| Integer(segment, 10) }
+end
+
 marketing_version = marketing_match[1].strip
 build_number = Integer(build_match[1].strip, 10)
 
 command = ARGV.fetch(0, "build")
 
-major, minor, patch = marketing_version.split(".").map { |segment| Integer(segment, 10) }
+major, minor, patch = parse_semver.call(marketing_version, "MARKETING_VERSION")
 
 case command
 when "build"
@@ -34,10 +42,7 @@ when "major"
   build_number += 1
 when "set-version"
   new_version = ARGV[1] or abort("Usage: #{$PROGRAM_NAME} set-version X.Y.Z")
-  unless new_version.match?(/\A\d+\.\d+\.\d+\z/)
-    abort("Version must use X.Y.Z format")
-  end
-  major, minor, patch = new_version.split(".").map { |segment| Integer(segment, 10) }
+  major, minor, patch = parse_semver.call(new_version, "Version")
 when "set-build"
   new_build = ARGV[1] or abort("Usage: #{$PROGRAM_NAME} set-build N")
   build_number = Integer(new_build, 10)
