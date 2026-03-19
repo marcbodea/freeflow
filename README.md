@@ -9,7 +9,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
+  This repository is the independently maintained continuation of FreeFlow.<br>
+  Huge thanks to <a href="https://github.com/zachlatta">Zach Latta</a> for creating and open-sourcing the original project.
+</p>
+
+<p align="center">
+  <a href="https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
   <sub>Works on all Macs (Apple Silicon + Intel)</sub>
 </p>
 
@@ -25,7 +30,7 @@ So over the weekend I vibe-coded my own free version!
 
 It's called FreeFlow. Here's how it works:
 
-1. Download the app from above or [click here](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)
+1. Download the app from above or [click here](https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.dmg)
 2. Get a free Groq API key from [groq.com](https://groq.com/)
 3. Hold `Fn` to talk, or tap `Command-Fn` to start and stop dictation, and have whatever you say pasted into the current text field
 
@@ -34,6 +39,8 @@ You can also customize both shortcuts. If your toggle shortcut extends your hold
 One of the cool features is that it's context aware. If you're replying to an email, it'll read the names of the people you're replying to and make sure to spell their names correctly. Same with if you're dictating into a terminal or another app. This is the same thing as Monologue's "Deep Context" feature.
 
 An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
+
+Going forward, new fixes, improvements, and releases will be maintained in this fork.
 
 ### FAQ
 
