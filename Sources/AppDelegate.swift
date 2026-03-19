@@ -120,12 +120,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startRuntimeServicesIfNeeded() {
-        guard appState.supportsSystemIntegrations else { return }
-        appState.startHotkeyMonitoring()
-        appState.startAccessibilityPolling()
         Task { @MainActor in
             UpdateManager.shared.startPeriodicChecks()
         }
+
+        guard appState.supportsSystemIntegrations else { return }
+        appState.startHotkeyMonitoring()
+        appState.startAccessibilityPolling()
 
         if !AXIsProcessTrusted() {
             appState.showAccessibilityAlert()

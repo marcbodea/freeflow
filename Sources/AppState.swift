@@ -392,6 +392,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         runtimeMode.allowsSystemIntegrations
     }
 
+    var usesPersistentState: Bool {
+        runtimeMode == .live
+    }
+
     var isPreviewOrTest: Bool {
         runtimeMode != .live
     }
@@ -532,6 +536,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func clearPipelineHistory() {
+        guard usesPersistentState else {
+            pipelineHistory = []
+            return
+        }
         do {
             let removedAudioFileNames = try pipelineHistoryStore.clearAll()
             for audioFileName in removedAudioFileNames {
@@ -910,6 +918,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
         NSSound(named: name)?.play()
     }
 
+    private func canUseRecordingSystemIntegrations() -> Bool {
+        guard supportsSystemIntegrations else {
+            os_log(.info, log: recordingLog, "Skipping recording action; system integrations unavailable")
+            return false
+        }
+        return true
+    }
+
     private func handleShortcutEvent(_ event: ShortcutEvent) {
         guard let action = shortcutSessionController.handle(event: event, isTranscribing: isTranscribing) else {
             return
@@ -939,6 +955,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     func toggleRecording() {
         os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
+        guard canUseRecordingSystemIntegrations() else { return }
         cancelPendingShortcutStart()
         if isRecording {
             stopAndTranscribe()
@@ -991,6 +1008,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func startRecording(triggerMode: RecordingTriggerMode) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
+        guard canUseRecordingSystemIntegrations() else { return }
         guard !isRecording && !isTranscribing else { return }
         cancelPendingShortcutStart()
         activeRecordingTriggerMode = triggerMode
@@ -1011,6 +1029,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func ensureMicrophoneAccess() -> Bool {
+        guard canUseRecordingSystemIntegrations() else { return false }
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
         case .authorized:
@@ -1042,6 +1061,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func beginRecording(triggerMode: RecordingTriggerMode) {
+        guard canUseRecordingSystemIntegrations() else { return }
         os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
 
@@ -1160,6 +1180,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func stopAndTranscribe() {
+        guard canUseRecordingSystemIntegrations() else { return }
         cancelPendingShortcutStart()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
@@ -1321,6 +1342,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         processingStatus: String,
         audioFileName: String? = nil
     ) {
+        guard usesPersistentState else { return }
         let newEntry = PipelineHistoryItem(
             timestamp: Date(),
             rawTranscript: rawTranscript,
@@ -1349,6 +1371,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func updatePipelineHistoryEntry(_ item: PipelineHistoryItem) {
+        guard usesPersistentState else { return }
         do {
             try pipelineHistoryStore.update(item)
             pipelineHistory = pipelineHistoryStore.loadAllHistory()
@@ -1424,6 +1447,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startContextCapture() {
+        guard canUseRecordingSystemIntegrations() else { return }
         contextCaptureTask?.cancel()
         capturedContext = nil
         lastContextSummary = "Collecting app context..."
@@ -1605,6 +1629,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func pasteAtCursor() {
+        guard canUseRecordingSystemIntegrations() else { return }
         let source = CGEventSource(stateID: .hidSystemState)
 
         let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
@@ -1617,6 +1642,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
+        guard canUseRecordingSystemIntegrations() else { return nil }
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
 
@@ -1628,6 +1654,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func restoreClipboardIfNeeded(_ pendingRestore: PendingClipboardRestore?) {
+        guard canUseRecordingSystemIntegrations() else { return }
         guard let pendingRestore else { return }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + clipboardRestoreDelay) {
@@ -1638,6 +1665,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func pasteAtCursorWhenShortcutReleased(attempt: Int = 0, completion: (() -> Void)? = nil) {
+        guard canUseRecordingSystemIntegrations() else {
+            completion?()
+            return
+        }
         let maxAttempts = 24
         if hotkeyManager.hasPressedShortcutInputs && attempt < maxAttempts {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in

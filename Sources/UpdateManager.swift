@@ -41,6 +41,20 @@ enum UpdateStatus: Equatable {
     case error(String)
 }
 
+private enum UpdateDownloadError: LocalizedError {
+    case invalidResponse
+    case unexpectedStatusCode(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "invalid server response."
+        case .unexpectedStatusCode(let statusCode):
+            return "server returned HTTP \(statusCode)."
+        }
+    }
+}
+
 // MARK: - Update Manager
 
 @MainActor
@@ -356,9 +370,14 @@ final class UpdateManager: ObservableObject {
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
             let (asyncBytes, response) = try await session.bytes(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw UpdateDownloadError.invalidResponse
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw UpdateDownloadError.unexpectedStatusCode(httpResponse.statusCode)
+            }
 
-            let totalSize = (response as? HTTPURLResponse)
-                .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") }
+            let totalSize = Int(httpResponse.value(forHTTPHeaderField: "Content-Length") ?? "")
                 ?? expectedSize
 
             let outputHandle = try FileHandle(forWritingTo: {
@@ -366,9 +385,9 @@ final class UpdateManager: ObservableObject {
                 return dmgPath
             }())
 
-            // Run the byte-iteration and file I/O off the main thread
             let mgr = self
-            let downloadTask = Task.detached {
+            let downloadTask = Task {
+                defer { try? outputHandle.close() }
                 var receivedBytes = 0
                 let bufferSize = 65_536
                 var buffer = Data()
@@ -376,6 +395,9 @@ final class UpdateManager: ObservableObject {
                 var lastProgressUpdate = CFAbsoluteTimeGetCurrent()
 
                 for try await byte in asyncBytes {
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
                     try Task.checkCancellation()
                     buffer.append(byte)
                     if buffer.count >= bufferSize {
@@ -397,10 +419,12 @@ final class UpdateManager: ObservableObject {
 
                 // Write remaining bytes
                 if !buffer.isEmpty {
+                    if Task.isCancelled {
+                        throw CancellationError()
+                    }
                     outputHandle.write(buffer)
                     receivedBytes += buffer.count
                 }
-                try outputHandle.close()
             }
 
             try await downloadTask.value

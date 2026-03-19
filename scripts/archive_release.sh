@@ -7,6 +7,7 @@ DERIVED_DATA_PATH="$BUILD_DIR/DerivedDataRelease"
 ARCHIVE_PATH="$BUILD_DIR/FreeFlow.xcarchive"
 APP_PATH="$BUILD_DIR/FreeFlow.app"
 ZIP_PATH="$BUILD_DIR/FreeFlow.app.zip"
+ARCHIVED_APP_PATH="$ARCHIVE_PATH/Products/Applications/FreeFlow.app"
 
 mkdir -p "$BUILD_DIR"
 rm -rf "$ARCHIVE_PATH" "$APP_PATH" "$ZIP_PATH"
@@ -35,7 +36,12 @@ fi
 
 xcodebuild "${XCODEBUILD_ARGS[@]}"
 
-cp -R "$ARCHIVE_PATH/Products/Applications/FreeFlow.app" "$APP_PATH"
+if [[ ! -d "$ARCHIVED_APP_PATH" ]]; then
+  echo "Expected archived app bundle was not found at $ARCHIVED_APP_PATH" >&2
+  exit 1
+fi
+
+cp -R "$ARCHIVED_APP_PATH" "$APP_PATH"
 ditto -c -k --keepParent "$APP_PATH" "$ZIP_PATH"
 
 echo "Created $APP_PATH"

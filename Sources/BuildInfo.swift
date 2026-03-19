@@ -43,7 +43,16 @@ struct BuildInfo: Equatable {
 
         self.githubRepositorySlug = repository?.isEmpty == false ? repository! : Self.defaultRepositorySlug
         self.buildTag = rawBuildTag?.isEmpty == false ? rawBuildTag : nil
-        self.updateChannel = UpdateChannel(rawValue: channelString ?? "") ?? .dev
+        if let channelString, !channelString.isEmpty,
+           let parsedChannel = UpdateChannel(rawValue: channelString) {
+            self.updateChannel = parsedChannel
+        } else {
+            if let channelString, !channelString.isEmpty {
+                assertionFailure("Invalid FreeFlowUpdateChannel value: \(channelString)")
+                NSLog("Invalid FreeFlowUpdateChannel value '%@'; defaulting to 'dev'.", channelString)
+            }
+            self.updateChannel = .dev
+        }
         self.version = (infoDictionary["CFBundleShortVersionString"] as? String) ?? "0.1.0"
         self.buildNumber = (infoDictionary["CFBundleVersion"] as? String) ?? "1"
         self.bundleIdentifier = bundleIdentifier

@@ -1131,14 +1131,26 @@ class GitHubMetadataCache: ObservableObject {
             if count > 0 {
                 let perPage = 100
                 let lastPage = max(1, Int(ceil(Double(count) / Double(perPage))))
-                let stargazersURL = URL(string: "\(buildInfo.repositoryAPIURL.absoluteString)/stargazers?per_page=\(perPage)&page=\(lastPage)")!
-                var request = URLRequest(url: stargazersURL)
-                request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
-                let starredResult = try await URLSession.shared.data(for: request)
-                if let starredHTTP = starredResult.1 as? HTTPURLResponse,
-                   (200..<300).contains(starredHTTP.statusCode) {
-                    let all = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
-                    recent = Array(all.suffix(15).reversed())
+                var components = URLComponents(
+                    url: repoAPIURL.appendingPathComponent("stargazers"),
+                    resolvingAgainstBaseURL: false
+                )
+                components?.queryItems = [
+                    URLQueryItem(name: "per_page", value: String(perPage)),
+                    URLQueryItem(name: "page", value: String(lastPage))
+                ]
+
+                if let stargazersURL = components?.url {
+                    var request = URLRequest(url: stargazersURL)
+                    request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
+                    let starredResult = try await URLSession.shared.data(for: request)
+                    if let starredHTTP = starredResult.1 as? HTTPURLResponse,
+                       (200..<300).contains(starredHTTP.statusCode) {
+                        let all = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
+                        recent = Array(all.suffix(15).reversed())
+                    }
+                } else {
+                    NSLog("Failed to build stargazers URL from %@", repoAPIURL.absoluteString)
                 }
             }
 

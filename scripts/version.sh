@@ -9,8 +9,13 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-marketing_version="$(sed -n 's/^MARKETING_VERSION = //p' "$CONFIG_PATH" | head -1 | tr -d '[:space:]')"
-build_number="$(sed -n 's/^CURRENT_PROJECT_VERSION = //p' "$CONFIG_PATH" | head -1 | tr -d '[:space:]')"
+extract_config_value() {
+  local key="$1"
+  sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$CONFIG_PATH" | sed -E 's/[[:space:]]+$//' | head -1
+}
+
+marketing_version="$(extract_config_value MARKETING_VERSION)"
+build_number="$(extract_config_value CURRENT_PROJECT_VERSION)"
 
 if [[ -z "$marketing_version" || -z "$build_number" ]]; then
   echo "Failed to read version metadata from $CONFIG_PATH" >&2

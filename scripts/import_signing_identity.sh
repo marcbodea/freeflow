@@ -28,9 +28,26 @@ security set-key-partition-list \
   -k "$KEYCHAIN_PASSWORD" \
   "$KEYCHAIN_PATH"
 
-security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+EXISTING_KEYCHAINS=()
+while IFS= read -r existing_keychain; do
+  [[ -n "$existing_keychain" ]] || continue
+  EXISTING_KEYCHAINS+=("$existing_keychain")
+done < <(security list-keychains -d user | tr -d '"' | sed 's/^[[:space:]]*//')
 
-IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+security list-keychains -d user -s "$KEYCHAIN_PATH" "${EXISTING_KEYCHAINS[@]}"
+
+FIND_IDENTITY_OUTPUT="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true)"
+IDENTITY="$(printf '%s\n' "$FIND_IDENTITY_OUTPUT" | sed -n '1s/.*"\(.*\)".*/\1/p')"
+
+if [[ -z "$IDENTITY" ]]; then
+  echo "Failed to find a codesigning identity in $KEYCHAIN_PATH." >&2
+  if [[ -n "$FIND_IDENTITY_OUTPUT" ]]; then
+    printf '%s\n' "$FIND_IDENTITY_OUTPUT" >&2
+  else
+    echo "security find-identity returned no output." >&2
+  fi
+  exit 1
+fi
 
 rm -f "$CERTIFICATE_PATH"
 
@@ -43,4 +60,3 @@ fi
 
 printf 'export CODESIGN_IDENTITY=%q\n' "$IDENTITY"
 printf 'export KEYCHAIN_PATH=%q\n' "$KEYCHAIN_PATH"
-
