@@ -3,9 +3,9 @@ import CoreAudio
 import Foundation
 import os.log
 
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+private let recordingLog = OSLog(subsystem: BuildInfo.defaultBundleIdentifier, category: "Recording")
 
-struct AudioDevice: Identifiable {
+struct AudioDevice: Identifiable, Equatable {
     let id: AudioDeviceID
     let uid: String
     let name: String
@@ -124,7 +124,7 @@ class AudioRecorder: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
-    private let audioFileQueue = DispatchQueue(label: "com.zachlatta.freeflow.audiofile")
+    private let audioFileQueue = DispatchQueue(label: "\(BuildInfo.defaultBundleIdentifier).audiofile")
     private var recordingStartTime: CFAbsoluteTime = 0
     private var firstBufferLogged = false
     private var bufferCount: Int = 0

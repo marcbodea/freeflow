@@ -8,7 +8,7 @@ struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let buildInfo = BuildInfo.current
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
@@ -139,8 +139,12 @@ struct SetupView: View {
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
-            Task {
-                await githubCache.fetchIfNeeded()
+            if appState.isPreviewOrTest {
+                githubCache.loadPreviewData()
+            } else {
+                Task {
+                    await githubCache.fetchIfNeeded()
+                }
             }
         }
         .onDisappear {
@@ -187,7 +191,7 @@ struct SetupView: View {
                 .frame(width: 128, height: 128)
 
             VStack(spacing: 6) {
-                Text("Welcome to FreeFlow")
+                Text("Welcome to \(buildInfo.productName)")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
 
                 Text("Dictate text anywhere on your Mac.\nHold to talk or tap to toggle dictation.")
@@ -198,21 +202,14 @@ struct SetupView: View {
 
             VStack(spacing: 10) {
                 HStack(spacing: 8) {
-                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().aspectRatio(contentMode: .fill)
-                        default:
-                            Color.gray.opacity(0.2)
-                        }
-                    }
-                    .frame(width: 26, height: 26)
-                    .clipShape(Circle())
+                    Image(systemName: "shippingbox.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
 
                     Button {
-                        openURL(freeflowRepoURL)
+                        openURL(buildInfo.repositoryURL)
                     } label: {
-                        Text("zachlatta/freeflow")
+                        Text(buildInfo.githubRepositorySlug)
                             .font(.system(.caption, design: .monospaced).weight(.medium))
                     }
                     .buttonStyle(.plain)
@@ -237,7 +234,7 @@ struct SetupView: View {
                     .background(Capsule().fill(Color.yellow.opacity(0.14)))
 
                     Button {
-                        openURL(freeflowRepoURL)
+                        openURL(buildInfo.repositoryURL)
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "star")
@@ -1105,9 +1102,15 @@ class GitHubMetadataCache: ObservableObject {
 
     private var lastFetchDate: Date?
     private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
-    private let repoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
+    private let buildInfo: BuildInfo
 
-    private init() {}
+    private init(buildInfo: BuildInfo = .current) {
+        self.buildInfo = buildInfo
+    }
+
+    private var repoAPIURL: URL {
+        buildInfo.repositoryAPIURL
+    }
 
     func fetchIfNeeded() async {
         if let lastFetch = lastFetchDate, Date().timeIntervalSince(lastFetch) < cacheDuration {
@@ -1128,7 +1131,7 @@ class GitHubMetadataCache: ObservableObject {
             if count > 0 {
                 let perPage = 100
                 let lastPage = max(1, Int(ceil(Double(count) / Double(perPage))))
-                let stargazersURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=\(perPage)&page=\(lastPage)")!
+                let stargazersURL = URL(string: "\(buildInfo.repositoryAPIURL.absoluteString)/stargazers?per_page=\(perPage)&page=\(lastPage)")!
                 var request = URLRequest(url: stargazersURL)
                 request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
                 let starredResult = try await URLSession.shared.data(for: request)
@@ -1146,6 +1149,12 @@ class GitHubMetadataCache: ObservableObject {
         } catch {
             isLoading = false
         }
+    }
+
+    func loadPreviewData() {
+        starCount = 0
+        recentStargazers = []
+        isLoading = false
     }
 }
 

@@ -100,7 +100,7 @@ struct GeneralSettingsView: View {
     @State private var micPermissionGranted = false
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let buildInfo = BuildInfo.current
 
     var body: some View {
         ScrollView {
@@ -112,31 +112,33 @@ struct GeneralSettingsView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
 
-                    Text("FreeFlow")
+                    Text(buildInfo.productName)
                         .font(.system(size: 20, weight: .bold, design: .rounded))
 
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
+                    Text(buildInfo.currentVersionBuildDisplay)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    if buildInfo.isDevelopmentBuild {
+                        Text("Development Build")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.orange.opacity(0.18))
+                            .clipShape(Capsule())
+                    }
 
                     // GitHub card
                     VStack(spacing: 10) {
                         HStack(spacing: 8) {
-                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image.resizable().aspectRatio(contentMode: .fill)
-                                default:
-                                    Color.gray.opacity(0.2)
-                                }
-                            }
-                            .frame(width: 22, height: 22)
-                            .clipShape(Circle())
+                            Image(systemName: "shippingbox.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(buildInfo.repositoryURL)
                             } label: {
-                                Text("zachlatta/freeflow")
+                                Text(buildInfo.githubRepositorySlug)
                                     .font(.system(.caption, design: .monospaced).weight(.medium))
                             }
                             .buttonStyle(.plain)
@@ -161,7 +163,7 @@ struct GeneralSettingsView: View {
                             .background(Capsule().fill(Color.yellow.opacity(0.14)))
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(buildInfo.repositoryURL)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "star")
@@ -258,7 +260,11 @@ struct GeneralSettingsView: View {
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             appState.refreshLaunchAtLoginStatus()
-            Task { await githubCache.fetchIfNeeded() }
+            if appState.isPreviewOrTest {
+                githubCache.loadPreviewData()
+            } else {
+                Task { await githubCache.fetchIfNeeded() }
+            }
         }
     }
 
@@ -268,7 +274,7 @@ struct GeneralSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
 
-            if SMAppService.mainApp.status == .requiresApproval {
+            if appState.loginItemRequiresApproval {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
@@ -289,113 +295,122 @@ struct GeneralSettingsView: View {
 
     private var updatesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Automatically check for updates", isOn: Binding(
-                get: { updateManager.autoCheckEnabled },
-                set: { updateManager.autoCheckEnabled = $0 }
-            ))
+            if !updateManager.isEnabled {
+                Label("Updater is disabled in development builds.", systemImage: "hammer.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Release builds check GitHub releases from \(buildInfo.githubRepositorySlug).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Toggle("Automatically check for updates", isOn: Binding(
+                    get: { updateManager.autoCheckEnabled },
+                    set: { updateManager.autoCheckEnabled = $0 }
+                ))
 
-            HStack(spacing: 10) {
-                Button {
-                    Task {
-                        await updateManager.checkForUpdates(userInitiated: true)
-                    }
-                } label: {
-                    if updateManager.isChecking {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking...")
+                HStack(spacing: 10) {
+                    Button {
+                        Task {
+                            await updateManager.checkForUpdates(userInitiated: true)
                         }
-                    } else {
-                        Text("Check for Updates Now")
+                    } label: {
+                        if updateManager.isChecking {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Checking...")
+                            }
+                        } else {
+                            Text("Check for Updates Now")
+                        }
                     }
-                }
-                .disabled(updateManager.isChecking || updateManager.updateStatus != .idle)
+                    .disabled(updateManager.isChecking || updateManager.updateStatus != .idle)
 
-                if let lastCheck = updateManager.lastCheckDate {
-                    Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if updateManager.updateAvailable {
-                VStack(alignment: .leading, spacing: 8) {
-                    switch updateManager.updateStatus {
-                    case .downloading:
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Downloading update...")
-                                    .font(.caption.weight(.semibold))
-                                ProgressView(value: updateManager.downloadProgress ?? 0)
-                                    .progressViewStyle(.linear)
-                                if let progress = updateManager.downloadProgress {
-                                    Text("\(Int(progress * 100))%")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            Button("Cancel") {
-                                updateManager.cancelDownload()
-                            }
+                    if let lastCheck = updateManager.lastCheckDate {
+                        Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption)
-                        }
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
-                    case .installing:
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Installing update...")
-                                .font(.caption.weight(.semibold))
-                        }
-
-                    case .readyToRelaunch:
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Relaunching...")
-                                .font(.caption.weight(.semibold))
-                        }
-
-                    case .error(let message):
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.red)
-                            Text(message)
+                if updateManager.updateAvailable {
+                    VStack(alignment: .leading, spacing: 8) {
+                        switch updateManager.updateStatus {
+                        case .downloading:
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .foregroundStyle(.blue)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Downloading update...")
+                                        .font(.caption.weight(.semibold))
+                                    ProgressView(value: updateManager.downloadProgress ?? 0)
+                                        .progressViewStyle(.linear)
+                                    if let progress = updateManager.downloadProgress {
+                                        Text("\(Int(progress * 100))%")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Button("Cancel") {
+                                    updateManager.cancelDownload()
+                                }
                                 .font(.caption)
-                                .foregroundStyle(.red)
-                            Spacer()
-                            Button("Retry") {
-                                updateManager.updateStatus = .idle
-                                if let release = updateManager.latestRelease {
-                                    updateManager.downloadAndInstall(release: release)
-                                }
                             }
-                            .font(.caption)
-                        }
 
-                    case .idle:
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(.blue)
-                            Text("A new version of FreeFlow is available!")
-                                .font(.caption.weight(.semibold))
-                            Spacer()
-                            Button("Update Now") {
-                                if let release = updateManager.latestRelease {
-                                    updateManager.downloadAndInstall(release: release)
-                                }
+                        case .installing:
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Installing update...")
+                                    .font(.caption.weight(.semibold))
                             }
-                            .font(.caption)
+
+                        case .readyToRelaunch:
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Relaunching...")
+                                    .font(.caption.weight(.semibold))
+                            }
+
+                        case .error(let message):
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.red)
+                                Text(message)
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                                Spacer()
+                                Button("Retry") {
+                                    updateManager.updateStatus = .idle
+                                    if let release = updateManager.latestRelease {
+                                        updateManager.downloadAndInstall(release: release)
+                                    }
+                                }
+                                .font(.caption)
+                            }
+
+                        case .idle:
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .foregroundStyle(.blue)
+                                Text("A new version of FreeFlow is available!")
+                                    .font(.caption.weight(.semibold))
+                                Spacer()
+                                Button("Update Now") {
+                                    if let release = updateManager.latestRelease {
+                                        updateManager.downloadAndInstall(release: release)
+                                    }
+                                }
+                                .font(.caption)
+                            }
                         }
                     }
+                    .padding(10)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(6)
                 }
-                .padding(10)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(6)
             }
         }
     }
@@ -735,6 +750,7 @@ struct MicrophoneOptionRow: View {
 
 struct PromptsSettingsView: View {
     @EnvironmentObject var appState: AppState
+    private let buildInfo = BuildInfo.current
     @State private var customSystemPromptInput: String = ""
     @State private var customContextPromptInput: String = ""
     @State private var showDefaultSystemPrompt = false
@@ -963,8 +979,8 @@ struct PromptsSettingsView: View {
         let vocabulary = appState.customVocabulary
 
         let context = AppContext(
-            appName: "FreeFlow Settings",
-            bundleIdentifier: "com.zachlatta.freeflow",
+            appName: "\(buildInfo.productName) Settings",
+            bundleIdentifier: buildInfo.bundleIdentifier,
             windowTitle: "System Prompt Test",
             selectedText: nil,
             currentActivity: "User is testing the system prompt in FreeFlow settings.",

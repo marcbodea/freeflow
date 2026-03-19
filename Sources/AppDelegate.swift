@@ -22,15 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !appState.hasCompletedSetup {
             showSetupWindow()
         } else {
-            appState.startHotkeyMonitoring()
-            appState.startAccessibilityPolling()
-            Task { @MainActor in
-                UpdateManager.shared.startPeriodicChecks()
-            }
-
-            if !AXIsProcessTrusted() {
-                appState.showAccessibilityAlert()
-            }
+            startRuntimeServicesIfNeeded()
         }
 
     }
@@ -62,6 +54,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentSettingsWindow() {
+        let buildInfo = BuildInfo.current
         let settingsView = SettingsView()
             .environmentObject(appState)
         let hostingView = NSHostingView(rootView: settingsView)
@@ -72,7 +65,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = buildInfo.productName
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
@@ -91,6 +84,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showSetupWindow() {
+        let buildInfo = BuildInfo.current
         NSApp.setActivationPolicy(.regular)
 
         let setupView = SetupView(onComplete: { [weak self] in
@@ -104,7 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "FreeFlow"
+        window.title = buildInfo.productName
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.contentView = NSHostingView(rootView: setupView)
@@ -122,6 +116,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupWindow?.close()
         setupWindow = nil
         NSApp.setActivationPolicy(.accessory)
+        startRuntimeServicesIfNeeded()
+    }
+
+    private func startRuntimeServicesIfNeeded() {
+        guard appState.supportsSystemIntegrations else { return }
         appState.startHotkeyMonitoring()
         appState.startAccessibilityPolling()
         Task { @MainActor in

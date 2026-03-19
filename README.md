@@ -1,56 +1,76 @@
 <p align="center">
-  This repository is a fork of FreeFlow with additional features and bug fixes.<br>
-  Huge thanks to <a href="https://github.com/zachlatta">Zach Latta</a> for creating and open-sourcing the original project.
-</p>
-
-<p align="center">
   <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="FreeFlow icon">
 </p>
 
 <h1 align="center">FreeFlow</h1>
 
 <p align="center">
-  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
+  Free and open source macOS dictation with context-aware post-processing.
 </p>
 
 <p align="center">
-  <a href="https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
-  <sub>Works on all Macs (Apple Silicon + Intel)</sub>
+  <a href="https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.dmg"><b>Download FreeFlow.dmg</b></a><br>
+  <a href="https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.app.zip"><b>Download FreeFlow.app.zip</b></a>
 </p>
 
----
+This repository is the source of truth for the rebranded FreeFlow app. Signed and notarized releases are published from [`main`](https://github.com/marcbodea/freeflow/tree/main) to [`marcbodea/freeflow`](https://github.com/marcbodea/freeflow).
 
-<p align="center">
-  <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
-</p>
+## Local Development
 
-I like the concept of apps like [Wispr Flow](https://wisprflow.ai/), [Superwhisper](https://superwhisper.com/), and [Monologue](https://www.monologue.to/) that use AI to add accurate and easy-to-use transcription to your computer, but they all charge fees of ~$10/month when the underlying AI models are free to use or cost pennies.
+1. Generate the project if needed: `make xcodeproj`
+2. Open `FreeFlow.xcodeproj`
+3. Run the `FreeFlow Dev` scheme
 
-So over the weekend I vibe-coded my own free version!
+`FreeFlow Dev` uses the bundle ID `com.marcbodea.freeflow.dev`, disables the updater, and signs ad hoc for local iteration. SwiftUI previews are available for the setup, settings, menu bar, and pipeline debug surfaces. For behavior work outside previews, use incremental Debug runs from Xcode.
 
-It's called FreeFlow. Here's how it works:
+Helpful commands:
 
-1. Download the app from above or [click here](https://github.com/marcbodea/freeflow/releases/latest/download/FreeFlow.dmg)
-2. Get a free Groq API key from [groq.com](https://groq.com/)
-3. Hold `Fn` to talk, or tap `Command-Fn` to start and stop dictation, and have whatever you say pasted into the current text field
+- `make dev` builds the `FreeFlow Dev` app with `xcodebuild`
+- `make test` runs the Debug test suite through the `FreeFlow Dev` scheme
+- `make release-artifacts` creates unsigned local release artifacts in `build/`
+- `make version` prints the current marketing version, build number, and release tag
+- `make bump-build`, `make bump-patch`, `make bump-minor`, and `make bump-major` update `Config/Base.xcconfig`
+- `make set-version VERSION=0.2.0` and `make set-build BUILD=42` set explicit values
 
-You can also customize both shortcuts. If your toggle shortcut extends your hold shortcut, you can start in hold mode and press the extra modifier keys to latch into tap mode without stopping the recording.
+## Release Pipeline
 
-One of the cool features is that it's context aware. If you're replying to an email, it'll read the names of the people you're replying to and make sure to spell their names correctly. Same with if you're dictating into a terminal or another app. This is the same thing as Monologue's "Deep Context" feature.
+The canonical GitHub Actions workflow is [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
-An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
+- The workflow runs only when started manually from the GitHub Actions UI
+- Run `validate` to build and test without creating a release
+- Run `release` from the `main` branch to build a signed universal release, notarize the DMG, and create a GitHub release
+- Release tags use the format `vMARKETING_VERSION-bCURRENT_PROJECT_VERSION`
+- Release assets are `FreeFlow.dmg` and `FreeFlow.app.zip`
 
-This fork includes additional fixes and improvements while staying thankful to the original project and its creator.
+Required GitHub secrets:
 
-### FAQ
+- `DEVELOPER_ID_CERTIFICATE_BASE64`
+- `DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_PASSWORD`
 
-**Why does this use Groq instead of a local transcription model?**
+## App Identity
 
-I love this idea, and originally planned to build FreeFlow using local models, but to have post-processing (that's where you get correctly spelled names when replying to emails / etc), you need to have a local LLM too.
+The shipped app identity is now:
 
-If you do that, the total pipeline takes too long for the UX to be good (5-10 seconds per transcription instead of <1s). I also had concerns around battery life.
+- Release: `com.marcbodea.freeflow`
+- Development: `com.marcbodea.freeflow.dev`
 
-Some day!
+This is a clean identity break. Existing `com.zachlatta.freeflow` installs do not migrate preferences, setup state, login-item registration, or keychain namespace automatically. Users upgrading from the old identity need to re-run setup and re-enable launch at login.
+
+## Release Maintenance
+
+- Regenerate the committed project with `make xcodeproj` after changing `project.yml`
+- Local release packaging uses `xcodebuild`, `ditto`, and `hdiutil`; there is no `create-dmg` or `fileicon` dependency in CI
+- `scripts/archive_release.sh` produces `build/FreeFlow.app` and `build/FreeFlow.app.zip`
+- `scripts/package_dmg.sh` produces `build/FreeFlow.dmg`
+- Bump the version before a release push with `make bump-build` or one of the semver bump targets
+- Manual `release` runs fail if the computed tag already exists, so each shipped release needs a new version/build
+
+## Attribution
+
+This repo started from the original FreeFlow project by Zach Latta. The current shipped app, release pipeline, and bundle identity in this repository point entirely at `marcbodea/freeflow`.
 
 ## License
 

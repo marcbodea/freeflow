@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose whether to run validation only or publish a signed release"
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - release
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: make xcodeproj
+
+      - name: Test debug scheme
+        run: xcodebuild -project FreeFlow.xcodeproj -scheme "FreeFlow Dev" -configuration Debug test
+
+      - name: Build unsigned release target
+        run: xcodebuild -project FreeFlow.xcodeproj -scheme "FreeFlow Release" -configuration Release CODE_SIGNING_ALLOWED=NO build
+
+      - name: Unsigned packaging smoke test
+        run: |
+          ./scripts/archive_release.sh
+          ./scripts/package_dmg.sh
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'release' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: macos-latest
+    environment: Production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Xcode project
+        run: make xcodeproj
+
+      - name: Generate release tag
+        id: tag
+        run: |
+          git fetch --tags --force
+          VERSION="$(./scripts/version.sh marketing)"
+          BUILD="$(./scripts/version.sh build)"
+          TAG="$(./scripts/version.sh tag)"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Release tag $TAG already exists. Bump MARKETING_VERSION or CURRENT_PROJECT_VERSION before pushing to main." >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        env:
+          DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: eval "$("./scripts/import_signing_identity.sh")"
+
+      - name: Archive signed release
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
+          FREEFLOW_BUILD_TAG: ${{ steps.tag.outputs.tag }}
+        run: ./scripts/archive_release.sh
+
+      - name: Package DMG
+        run: ./scripts/package_dmg.sh
+
+      - name: Sign DMG
+        env:
+          CODESIGN_IDENTITY: ${{ env.CODESIGN_IDENTITY }}
+        run: codesign --force --sign "$CODESIGN_IDENTITY" build/FreeFlow.dmg
+
+      - name: Notarize and staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: ./scripts/notarize_dmg.sh build/FreeFlow.dmg
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: FreeFlow ${{ steps.tag.outputs.version }} (build ${{ steps.tag.outputs.build }})
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            build/FreeFlow.dmg
+            build/FreeFlow.app.zip
+
+      - name: Cleanup signing keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH"
+          fi

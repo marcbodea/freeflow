@@ -62,8 +62,14 @@ final class UpdateManager: ObservableObject {
     }
 
     var autoCheckEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "updateAutoCheckEnabled") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "updateAutoCheckEnabled") }
+        get {
+            guard isEnabled else { return false }
+            return UserDefaults.standard.object(forKey: "updateAutoCheckEnabled") as? Bool ?? true
+        }
+        set {
+            guard isEnabled else { return }
+            UserDefaults.standard.set(newValue, forKey: "updateAutoCheckEnabled")
+        }
     }
 
     private var skippedVersion: String? {
@@ -71,19 +77,36 @@ final class UpdateManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "updateSkippedVersion") }
     }
 
-    private let releasesURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/releases/latest")!
+    let buildInfo: BuildInfo
+    private let session: URLSession
     private let stabilityBufferDays: TimeInterval = 3
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private var periodicTimer: Timer?
     private var activeDownloadTask: Task<Void, Never>?
 
-    private init() {
+    var isEnabled: Bool {
+        buildInfo.updaterEnabled
+    }
+
+    private var releasesURL: URL {
+        buildInfo.latestReleaseAPIURL
+    }
+
+    init(buildInfo: BuildInfo = .current, session: URLSession = .shared) {
+        self.buildInfo = buildInfo
+        self.session = session
         lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
     }
 
     // MARK: - Periodic Checks
 
     func startPeriodicChecks() {
+        guard isEnabled else {
+            periodicTimer?.invalidate()
+            periodicTimer = nil
+            return
+        }
+
         // Initial check after 5 second delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             guard let self else { return }
@@ -107,6 +130,7 @@ final class UpdateManager: ObservableObject {
     }
 
     private func shouldAutoCheck() -> Bool {
+        guard isEnabled else { return false }
         guard autoCheckEnabled else { return false }
         guard let lastCheck = lastCheckDate else { return true }
         return Date().timeIntervalSince(lastCheck) > checkIntervalSeconds
@@ -115,12 +139,13 @@ final class UpdateManager: ObservableObject {
     // MARK: - Check for Updates
 
     func checkForUpdates(userInitiated: Bool) async {
-        let currentBuildTag = Bundle.main.infoDictionary?["FreeFlowBuildTag"] as? String
-
-        // Dev builds (no embedded tag): skip auto-checks, but allow manual checks
-        if !userInitiated && currentBuildTag == nil {
+        guard isEnabled else {
+            updateAvailable = false
+            latestRelease = nil
             return
         }
+
+        let currentBuildTag = buildInfo.buildTag
 
         isChecking = true
         defer { isChecking = false }
@@ -130,7 +155,7 @@ final class UpdateManager: ObservableObject {
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 if userInitiated { showErrorAlert("Could not reach GitHub.") }
@@ -151,8 +176,7 @@ final class UpdateManager: ObservableObject {
                 return
             }
 
-            let decoder = JSONDecoder()
-            let release = try decoder.decode(GitHubRelease.self, from: data)
+            let release = try Self.decodeLatestRelease(from: data)
             lastCheckDate = Date()
 
             // Parse the published date
@@ -294,7 +318,8 @@ final class UpdateManager: ObservableObject {
     }
 
     func downloadAndInstall(release: GitHubRelease) {
-        guard let dmgAsset = release.assets.first(where: { $0.name.hasSuffix(".dmg") }) else {
+        guard isEnabled else { return }
+        guard let dmgAsset = Self.preferredInstallerAsset(in: release) else {
             if let url = URL(string: release.htmlUrl) {
                 NSWorkspace.shared.open(url)
             }
@@ -330,7 +355,7 @@ final class UpdateManager: ObservableObject {
             var request = URLRequest(url: downloadURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
-            let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+            let (asyncBytes, response) = try await session.bytes(for: request)
 
             let totalSize = (response as? HTTPURLResponse)
                 .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") }
@@ -506,5 +531,13 @@ final class UpdateManager: ObservableObject {
 
         // Quit the current app
         NSApp.terminate(nil)
+    }
+
+    static func decodeLatestRelease(from data: Data) throws -> GitHubRelease {
+        try JSONDecoder().decode(GitHubRelease.self, from: data)
+    }
+
+    static func preferredInstallerAsset(in release: GitHubRelease) -> GitHubReleaseAsset? {
+        release.assets.first(where: { $0.name.hasSuffix(".dmg") })
     }
 }

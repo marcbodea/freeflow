@@ -8,7 +8,17 @@ import ApplicationServices
 import ScreenCaptureKit
 import os.log
 
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+private let recordingLog = OSLog(subsystem: BuildInfo.defaultBundleIdentifier, category: "Recording")
+
+enum AppRuntimeMode: Equatable {
+    case live
+    case preview
+    case test
+
+    var allowsSystemIntegrations: Bool {
+        self == .live
+    }
+}
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
@@ -113,10 +123,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     private let clipboardRestoreDelay: TimeInterval = 0.15
     let maxPipelineHistoryCount = 20
+    let runtimeMode: AppRuntimeMode
 
     @Published var hasCompletedSetup: Bool {
         didSet {
-            UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
+            persistValue(hasCompletedSetup, forKey: "hasCompletedSetup")
         }
     }
 
@@ -162,62 +173,62 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @Published var customVocabulary: String {
         didSet {
-            UserDefaults.standard.set(customVocabulary, forKey: customVocabularyStorageKey)
+            persistValue(customVocabulary, forKey: customVocabularyStorageKey)
         }
     }
 
     @Published var soundEffectsEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(soundEffectsEnabled, forKey: soundEffectsEnabledStorageKey)
+            persistValue(soundEffectsEnabled, forKey: soundEffectsEnabledStorageKey)
         }
     }
 
     @Published var customSystemPrompt: String {
         didSet {
-            UserDefaults.standard.set(customSystemPrompt, forKey: customSystemPromptStorageKey)
+            persistValue(customSystemPrompt, forKey: customSystemPromptStorageKey)
         }
     }
 
     @Published var customContextPrompt: String {
         didSet {
-            UserDefaults.standard.set(customContextPrompt, forKey: customContextPromptStorageKey)
+            persistValue(customContextPrompt, forKey: customContextPromptStorageKey)
             contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
         }
     }
 
     @Published var customSystemPromptLastModified: String {
         didSet {
-            UserDefaults.standard.set(customSystemPromptLastModified, forKey: customSystemPromptLastModifiedStorageKey)
+            persistValue(customSystemPromptLastModified, forKey: customSystemPromptLastModifiedStorageKey)
         }
     }
 
     @Published var customContextPromptLastModified: String {
         didSet {
-            UserDefaults.standard.set(customContextPromptLastModified, forKey: customContextPromptLastModifiedStorageKey)
+            persistValue(customContextPromptLastModified, forKey: customContextPromptLastModifiedStorageKey)
         }
     }
 
     @Published var forceHTTP2Transcription: Bool {
         didSet {
-            UserDefaults.standard.set(forceHTTP2Transcription, forKey: forceHTTP2TranscriptionStorageKey)
+            persistValue(forceHTTP2Transcription, forKey: forceHTTP2TranscriptionStorageKey)
         }
     }
 
     @Published var transcriptionModel: TranscriptionModel {
         didSet {
-            UserDefaults.standard.set(transcriptionModel.rawValue, forKey: transcriptionModelStorageKey)
+            persistValue(transcriptionModel.rawValue, forKey: transcriptionModelStorageKey)
         }
     }
 
     @Published var shortcutStartDelay: TimeInterval {
         didSet {
-            UserDefaults.standard.set(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
+            persistValue(shortcutStartDelay, forKey: shortcutStartDelayStorageKey)
         }
     }
 
     @Published var preserveClipboard: Bool {
         didSet {
-            UserDefaults.standard.set(preserveClipboard, forKey: preserveClipboardStorageKey)
+            persistValue(preserveClipboard, forKey: preserveClipboardStorageKey)
         }
     }
 
@@ -246,7 +257,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @Published var selectedMicrophoneID: String {
         didSet {
-            UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
+            persistValue(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
             if !isRecording {
                 audioRecorder.resetAudioEngine()
             }
@@ -274,44 +285,59 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private var shouldMonitorHotkeys = false
     private var isCapturingShortcut = false
 
-    init() {
-        let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
-        let apiBaseURL = Self.loadStoredAPIBaseURL(account: "api_base_url")
-        let shortcuts = Self.loadShortcutConfiguration(
-            holdKey: holdShortcutStorageKey,
-            toggleKey: toggleShortcutStorageKey
-        )
-        let savedHoldCustomShortcut = Self.loadShortcut(forKey: savedHoldCustomShortcutStorageKey)
-            ?? (shortcuts.hold.isCustom ? shortcuts.hold : nil)
-        let savedToggleCustomShortcut = Self.loadShortcut(forKey: savedToggleCustomShortcutStorageKey)
-            ?? (shortcuts.toggle.isCustom ? shortcuts.toggle : nil)
-        let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
-        let soundEffectsEnabled = UserDefaults.standard.object(forKey: soundEffectsEnabledStorageKey) as? Bool ?? true
-        let customSystemPrompt = UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? ""
-        let customContextPrompt = UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? ""
-        let customSystemPromptLastModified = UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? ""
-        let customContextPromptLastModified = UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? ""
-        let shortcutStartDelay = max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey))
-        let preserveClipboard = UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
-        let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
-        let transcriptionModel = TranscriptionModel(
-            rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
-        ) ?? .whisperLargeV3
-        let initialAccessibility = AXIsProcessTrusted()
-        let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
+    init(runtimeMode: AppRuntimeMode = .live) {
+        self.runtimeMode = runtimeMode
+
+        let usesPersistentState = runtimeMode == .live
+        let hasCompletedSetup = usesPersistentState ? UserDefaults.standard.bool(forKey: "hasCompletedSetup") : false
+        let apiKey = usesPersistentState ? Self.loadStoredAPIKey(account: apiKeyStorageKey) : ""
+        let apiBaseURL = usesPersistentState ? Self.loadStoredAPIBaseURL(account: "api_base_url") : Self.defaultAPIBaseURL
+        let shortcuts = usesPersistentState
+            ? Self.loadShortcutConfiguration(
+                holdKey: holdShortcutStorageKey,
+                toggleKey: toggleShortcutStorageKey
+            )
+            : StoredShortcutConfiguration(
+                hold: ShortcutPreset.fnKey.binding,
+                toggle: ShortcutPreset.fnKey.binding.withAddedModifiers(.command),
+                didMigrateLegacyValue: false
+            )
+        let savedHoldCustomShortcut = usesPersistentState
+            ? Self.loadShortcut(forKey: savedHoldCustomShortcutStorageKey) ?? (shortcuts.hold.isCustom ? shortcuts.hold : nil)
+            : nil
+        let savedToggleCustomShortcut = usesPersistentState
+            ? Self.loadShortcut(forKey: savedToggleCustomShortcutStorageKey) ?? (shortcuts.toggle.isCustom ? shortcuts.toggle : nil)
+            : nil
+        let customVocabulary = usesPersistentState ? (UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? "") : ""
+        let soundEffectsEnabled = usesPersistentState ? (UserDefaults.standard.object(forKey: soundEffectsEnabledStorageKey) as? Bool ?? true) : true
+        let customSystemPrompt = usesPersistentState ? (UserDefaults.standard.string(forKey: customSystemPromptStorageKey) ?? "") : ""
+        let customContextPrompt = usesPersistentState ? (UserDefaults.standard.string(forKey: customContextPromptStorageKey) ?? "") : ""
+        let customSystemPromptLastModified = usesPersistentState ? (UserDefaults.standard.string(forKey: customSystemPromptLastModifiedStorageKey) ?? "") : ""
+        let customContextPromptLastModified = usesPersistentState ? (UserDefaults.standard.string(forKey: customContextPromptLastModifiedStorageKey) ?? "") : ""
+        let shortcutStartDelay = usesPersistentState ? max(0, UserDefaults.standard.double(forKey: shortcutStartDelayStorageKey)) : 0
+        let preserveClipboard = usesPersistentState ? UserDefaults.standard.bool(forKey: preserveClipboardStorageKey) : true
+        let forceHTTP2Transcription = usesPersistentState ? UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey) : false
+        let transcriptionModel = usesPersistentState
+            ? (TranscriptionModel(
+                rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
+            ) ?? .whisperLargeV3)
+            : .whisperLargeV3
+        let initialAccessibility = usesPersistentState ? AXIsProcessTrusted() : true
+        let initialScreenCapturePermission = usesPersistentState ? CGPreflightScreenCaptureAccess() : true
         var removedAudioFileNames: [String] = []
-        do {
-            removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
-        } catch {
-            print("Failed to trim pipeline history during init: \(error)")
+        if usesPersistentState {
+            do {
+                removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
+            } catch {
+                print("Failed to trim pipeline history during init: \(error)")
+            }
         }
         for audioFileName in removedAudioFileNames {
             Self.deleteAudioFile(audioFileName)
         }
-        let savedHistory = pipelineHistoryStore.loadAllHistory()
+        let savedHistory = usesPersistentState ? pipelineHistoryStore.loadAllHistory() : []
 
-        let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
+        let selectedMicrophoneID = usesPersistentState ? (UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default") : "default"
 
         self.contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
         self.hasCompletedSetup = hasCompletedSetup
@@ -334,18 +360,22 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
         self.hasScreenRecordingPermission = initialScreenCapturePermission
-        self.launchAtLogin = SMAppService.mainApp.status == .enabled
+        self.launchAtLogin = runtimeMode.allowsSystemIntegrations ? (SMAppService.mainApp.status == .enabled) : false
         self.selectedMicrophoneID = selectedMicrophoneID
 
-        refreshAvailableMicrophones()
-        installAudioDeviceListener()
+        if runtimeMode.allowsSystemIntegrations {
+            refreshAvailableMicrophones()
+            installAudioDeviceListener()
+        }
 
-        if shortcuts.didMigrateLegacyValue {
+        if usesPersistentState && shortcuts.didMigrateLegacyValue {
             persistShortcut(shortcuts.hold, key: holdShortcutStorageKey)
             persistShortcut(shortcuts.toggle, key: toggleShortcutStorageKey)
         }
-        persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
-        persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
+        if usesPersistentState {
+            persistOptionalShortcut(savedHoldCustomShortcut, key: savedHoldCustomShortcutStorageKey)
+            persistOptionalShortcut(savedToggleCustomShortcut, key: savedToggleCustomShortcutStorageKey)
+        }
 
         overlayManager.onStopButtonPressed = { [weak self] in
             DispatchQueue.main.async {
@@ -358,7 +388,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         removeAudioDeviceListener()
     }
 
+    var supportsSystemIntegrations: Bool {
+        runtimeMode.allowsSystemIntegrations
+    }
+
+    var isPreviewOrTest: Bool {
+        runtimeMode != .live
+    }
+
+    var loginItemRequiresApproval: Bool {
+        supportsSystemIntegrations && SMAppService.mainApp.status == .requiresApproval
+    }
+
     private func removeAudioDeviceListener() {
+        guard supportsSystemIntegrations else { return }
         guard let block = audioDeviceListenerBlock else { return }
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -381,7 +424,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         return ""
     }
 
+    private func persistValue(_ value: Any, forKey key: String) {
+        guard runtimeMode == .live else { return }
+        UserDefaults.standard.set(value, forKey: key)
+    }
+
     private func persistAPIKey(_ value: String) {
+        guard runtimeMode == .live else { return }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             AppSettingsStorage.delete(account: apiKeyStorageKey)
@@ -427,6 +476,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func persistAPIBaseURL(_ value: String) {
+        guard runtimeMode == .live else { return }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == Self.defaultAPIBaseURL {
             AppSettingsStorage.delete(account: apiBaseURLStorageKey)
@@ -436,11 +486,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func persistShortcut(_ binding: ShortcutBinding, key: String) {
+        guard runtimeMode == .live else { return }
         guard let data = try? JSONEncoder().encode(binding) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
 
     private func persistOptionalShortcut(_ binding: ShortcutBinding?, key: String) {
+        guard runtimeMode == .live else { return }
         guard let binding else {
             UserDefaults.standard.removeObject(forKey: key)
             return
@@ -647,6 +699,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func startAccessibilityPolling() {
+        guard supportsSystemIntegrations else { return }
         accessibilityTimer?.invalidate()
         hasAccessibility = AXIsProcessTrusted()
         hasScreenRecordingPermission = hasScreenCapturePermission()
@@ -664,15 +717,17 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func openAccessibilitySettings() {
+        guard supportsSystemIntegrations else { return }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
         AXIsProcessTrustedWithOptions(options)
     }
 
     func hasScreenCapturePermission() -> Bool {
-        CGPreflightScreenCaptureAccess()
+        supportsSystemIntegrations ? CGPreflightScreenCaptureAccess() : hasScreenRecordingPermission
     }
 
     func requestScreenCapturePermission() {
+        guard supportsSystemIntegrations else { return }
         // ScreenCaptureKit triggers the "Screen & System Audio Recording"
         // permission dialog on macOS Sequoia+, correctly identifying the
         // running app (unlike the legacy CGWindowListCreateImage path).
@@ -693,6 +748,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
+        guard supportsSystemIntegrations else { return }
         do {
             if enabled {
                 try SMAppService.mainApp.register()
@@ -709,6 +765,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func refreshLaunchAtLoginStatus() {
+        guard supportsSystemIntegrations else { return }
         let current = SMAppService.mainApp.status == .enabled
         if current != launchAtLogin {
             launchAtLogin = current
@@ -716,10 +773,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func refreshAvailableMicrophones() {
+        guard supportsSystemIntegrations else { return }
         availableMicrophones = AudioDevice.availableInputDevices()
     }
 
     private func installAudioDeviceListener() {
+        guard supportsSystemIntegrations else { return }
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -808,6 +867,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func startHotkeyMonitoring() {
+        guard supportsSystemIntegrations else { return }
         shouldMonitorHotkeys = true
         hotkeyManager.onShortcutEvent = { [weak self] event in
             DispatchQueue.main.async {
@@ -833,6 +893,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func restartHotkeyMonitoring() {
+        guard supportsSystemIntegrations else {
+            hotkeyManager.stop()
+            return
+        }
         guard shouldMonitorHotkeys, !isCapturingShortcut else {
             hotkeyManager.stop()
             return

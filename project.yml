@@ -1,0 +1,30 @@
+name: FreeFlow
+deploymentTarget: "13.0"
+organizationName: Marc Bodea
+configs:
+  Debug: Config/Debug.xcconfig
+  Release: Config/Release.xcconfig
+appTarget:
+  name: FreeFlow
+  infoPlist: Info.plist
+  entitlements: FreeFlow.entitlements
+  sources:
+    - Sources/*.swift
+  resources:
+    - Resources/*
+testTarget:
+  name: FreeFlowTests
+  sources:
+    - Tests/*.swift
+schemes:
+  - name: FreeFlow Dev
+    buildConfiguration: Debug
+    launchTarget: FreeFlow
+    testTarget: FreeFlowTests
+  - name: FreeFlow Release
+    buildConfiguration: Release
+    launchTarget: FreeFlow
+  - name: FreeFlowTests
+    buildConfiguration: Debug
+    testTarget: FreeFlowTests
+    launchTarget: FreeFlow

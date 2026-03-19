@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import os.log
 
-private let transcriptionLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Transcription")
+private let transcriptionLog = OSLog(subsystem: BuildInfo.defaultBundleIdentifier, category: "Transcription")
 
 enum TranscriptionModel: String, CaseIterable, Identifiable, Codable {
     case whisperLargeV3 = "whisper-large-v3"

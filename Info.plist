@@ -3,23 +3,31 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>FreeFlow</string>
+    <string>$(PRODUCT_NAME)</string>
     <key>CFBundleDisplayName</key>
-    <string>FreeFlow</string>
+    <string>$(PRODUCT_NAME)</string>
     <key>CFBundleIdentifier</key>
-    <string>com.zachlatta.freeflow</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$(MARKETING_VERSION)</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>FreeFlow</string>
+    <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>FreeFlowGitHubRepository</key>
+    <string>$(FREEFLOW_GITHUB_REPOSITORY)</string>
+    <key>FreeFlowUpdateChannel</key>
+    <string>$(FREEFLOW_UPDATE_CHANNEL)</string>
+    <key>FreeFlowBuildTag</key>
+    <string>$(FREEFLOW_BUILD_TAG)</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>

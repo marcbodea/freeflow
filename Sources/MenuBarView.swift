@@ -3,18 +3,27 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var updateManager = UpdateManager.shared
-
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-    }
+    private let buildInfo = BuildInfo.current
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("FreeFlow v\(appVersion)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 4)
+            VStack(spacing: 4) {
+                Text(buildInfo.productName)
+                    .font(.caption.weight(.semibold))
+                Text(buildInfo.currentVersionBuildDisplay)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if buildInfo.isDevelopmentBuild {
+                    Text("Development Build")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.18))
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
 
             Divider()
 
@@ -294,7 +303,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit FreeFlow") {
+            Button("Quit \(buildInfo.productName)") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
