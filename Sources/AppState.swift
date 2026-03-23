@@ -114,6 +114,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
+    private let transcriptionModelStorageKey = "transcription_model"
     private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     private let clipboardRestoreDelay: TimeInterval = 0.15
@@ -214,6 +215,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var transcriptionModel: TranscriptionModel {
+        didSet {
+            UserDefaults.standard.set(transcriptionModel.rawValue, forKey: transcriptionModelStorageKey)
+        }
+    }
+
     @Published var soundVolume: Float {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
@@ -291,6 +298,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             ? true
             : UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
         let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
+        let transcriptionModel = TranscriptionModel(
+            rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
+        ) ?? .whisperV3
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         let initialAccessibility = AXIsProcessTrusted()
@@ -324,6 +334,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.shortcutStartDelay = shortcutStartDelay
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
+        self.transcriptionModel = transcriptionModel
         self.soundVolume = soundVolume
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
@@ -990,7 +1001,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionService = TranscriptionService(
             apiKey: apiKey,
             baseURL: apiBaseURL,
-            forceHTTP2: forceHTTP2Transcription
+            forceHTTP2: forceHTTP2Transcription,
+            transcriptionModel: transcriptionModel
         )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
 

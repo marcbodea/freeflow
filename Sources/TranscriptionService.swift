@@ -4,19 +4,50 @@ import os.log
 
 private let transcriptionLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Transcription")
 
+enum TranscriptionModel: String, CaseIterable, Identifiable {
+    case whisperV3 = "whisper-large-v3"
+    case whisperV3Turbo = "whisper-large-v3-turbo"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .whisperV3:
+            return "Whisper V3"
+        case .whisperV3Turbo:
+            return "Whisper V3 Turbo"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .whisperV3:
+            return "Highest-quality transcription."
+        case .whisperV3Turbo:
+            return "Faster responses with slightly lower accuracy."
+        }
+    }
+}
+
 class TranscriptionService {
     private let apiKey: String
     private let baseURL: String
     private let forceHTTP2: Bool
-    private let transcriptionModel = "whisper-large-v3"
+    private let transcriptionModel: TranscriptionModel
     private let transcriptionTimeoutSeconds: TimeInterval = 20
     private let uploadSampleRate = 16_000.0
     private let uploadChannelCount: AVAudioChannelCount = 1
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", forceHTTP2: Bool = false) {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        forceHTTP2: Bool = false,
+        transcriptionModel: TranscriptionModel = .whisperV3
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.forceHTTP2 = forceHTTP2
+        self.transcriptionModel = transcriptionModel
     }
 
     // Validate API key by hitting a lightweight endpoint
@@ -82,7 +113,7 @@ class TranscriptionService {
         let body = makeMultipartBody(
             audioData: audioData,
             fileName: fileURL.lastPathComponent,
-            model: transcriptionModel,
+            model: transcriptionModel.rawValue,
             boundary: boundary
         )
 
@@ -139,7 +170,7 @@ class TranscriptionService {
                 "--max-time", String(Int(self.transcriptionTimeoutSeconds)),
                 "\(self.baseURL)/audio/transcriptions",
                 "-H", "Authorization: Bearer \(apiKey)",
-                "-F", "model=\(transcriptionModel)",
+                "-F", "model=\(transcriptionModel.rawValue)",
                 "-F", "file=@\(fileURL.path);type=\(self.audioContentType(for: fileURL.lastPathComponent))"
             ]
 

@@ -231,6 +231,9 @@ struct GeneralSettingsView: View {
                 SettingsCard("API Key", icon: "key.fill") {
                     apiKeySection
                 }
+                SettingsCard("Transcription Model", icon: "waveform.badge.magnifyingglass") {
+                    transcriptionModelSection
+                }
                 SettingsCard("Dictation Shortcuts", icon: "keyboard.fill") {
                     hotkeySection
                 }
@@ -539,6 +542,27 @@ struct GeneralSettingsView: View {
         }
     }
 
+    // MARK: Transcription Model
+
+    private var transcriptionModelSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose which Whisper model FreeFlow uses for speech-to-text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            VStack(spacing: 6) {
+                ForEach(TranscriptionModel.allCases) { model in
+                    TranscriptionModelOptionRow(
+                        title: model.title,
+                        subtitle: model.subtitle,
+                        isSelected: appState.transcriptionModel == model,
+                        action: { appState.transcriptionModel = model }
+                    )
+                }
+            }
+        }
+    }
+
     // MARK: Clipboard
 
     private var clipboardSection: some View {
@@ -715,6 +739,40 @@ struct MicrophoneOptionRow: View {
                     .foregroundStyle(isSelected ? .blue : .secondary)
                 Text(name)
                     .foregroundStyle(.primary)
+                Spacer()
+            }
+            .padding(12)
+            .background(isSelected ? Color.blue.opacity(0.1) : Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 1.5)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct TranscriptionModelOptionRow: View {
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? .blue : .secondary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
             }
             .padding(12)
