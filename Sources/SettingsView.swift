@@ -243,7 +243,7 @@ struct GeneralSettingsView: View {
                 SettingsCard("Microphone", icon: "mic.fill") {
                     microphoneSection
                 }
-                SettingsCard("Sound Volume", icon: "speaker.wave.2.fill") {
+                SettingsCard("Feedback Sounds", icon: "speaker.wave.2.fill") {
                     soundVolumeSection
                 }
                 SettingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
@@ -607,7 +607,9 @@ struct GeneralSettingsView: View {
 
     private var soundVolumeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Adjust the volume of feedback sounds.")
+            Toggle("Play feedback sounds", isOn: $appState.playFeedbackSounds)
+
+            Text("Disable this to prevent FreeFlow from playing start, stop, and error sounds.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -616,6 +618,7 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
                 Slider(value: $appState.soundVolume, in: 0...1, step: 0.1)
+                    .disabled(!appState.playFeedbackSounds)
                 Image(systemName: "speaker.wave.3.fill")
                     .foregroundStyle(.secondary)
                     .font(.caption)
@@ -624,11 +627,13 @@ struct GeneralSettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 36, alignment: .trailing)
             }
+            .opacity(appState.playFeedbackSounds ? 1 : 0.5)
 
             Button("Preview") {
-                let s = NSSound(named: "Tink"); s?.volume = appState.soundVolume; s?.play()
+                appState.playFeedbackSound(named: "Tink")
             }
             .font(.caption)
+            .disabled(!appState.playFeedbackSounds)
         }
     }
 

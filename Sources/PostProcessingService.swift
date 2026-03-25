@@ -42,7 +42,7 @@ Output rules:
 
     private let apiKey: String
     private let baseURL: String
-    private let defaultModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let defaultModel = "openai/gpt-oss-20b"
     private let postProcessingTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1") {
@@ -123,11 +123,18 @@ Use these spellings exactly in the output when relevant:
         }
 
         let userMessage = """
-Instructions: Clean up RAW_TRANSCRIPTION and return only the cleaned transcript text without surrounding quotes. Return EMPTY if there should be no result.
+Clean and format the following dictation for the destination app described in the context.
 
-CONTEXT: "\(contextSummary)"
+CONTEXT:
+\(contextSummary)
 
-RAW_TRANSCRIPTION: "\(transcript)"
+CUSTOM VOCABULARY (spelling reference only):
+\(normalizedVocabulary)
+
+RAW TRANSCRIPT:
+\(transcript)
+
+Return only the final text. If the transcript is empty or contains only filler, return exactly: EMPTY
 """
 
         let promptForDisplay = """

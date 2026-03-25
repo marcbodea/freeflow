@@ -115,6 +115,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
     private let transcriptionModelStorageKey = "transcription_model"
+    private let playFeedbackSoundsStorageKey = "play_feedback_sounds"
     private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     private let clipboardRestoreDelay: TimeInterval = 0.15
@@ -221,6 +222,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var playFeedbackSounds: Bool {
+        didSet {
+            UserDefaults.standard.set(playFeedbackSounds, forKey: playFeedbackSoundsStorageKey)
+        }
+    }
+
     @Published var soundVolume: Float {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
@@ -301,6 +308,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionModel = TranscriptionModel(
             rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
         ) ?? .whisperV3
+        let playFeedbackSounds = UserDefaults.standard.object(forKey: playFeedbackSoundsStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: playFeedbackSoundsStorageKey)
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         let initialAccessibility = AXIsProcessTrusted()
@@ -335,6 +345,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
         self.transcriptionModel = transcriptionModel
+        self.playFeedbackSounds = playFeedbackSounds
         self.soundVolume = soundVolume
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
@@ -864,7 +875,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                     self.overlayManager.showRecording(mode: self.activeRecordingTriggerMode ?? triggerMode)
                 }
                 overlayShown = true
-                let s = NSSound(named: "Tink"); s?.volume = self.soundVolume; s?.play()
+                self.playFeedbackSound(named: "Tink")
             }
         }
 
@@ -913,6 +924,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         return "Failed to start recording: \(error.localizedDescription)"
+    }
+
+    func playFeedbackSound(named name: NSSound.Name) {
+        guard playFeedbackSounds else { return }
+        let sound = NSSound(named: name)
+        sound?.volume = soundVolume
+        sound?.play()
     }
 
     func showMicrophonePermissionAlert() {
@@ -982,7 +1000,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         statusText = "Transcribing..."
         debugStatusMessage = "Transcribing audio"
         errorMessage = nil
-        let s = NSSound(named: "Pop"); s?.volume = soundVolume; s?.play()
+        playFeedbackSound(named: "Pop")
         overlayManager.slideUpToNotch { }
 
         transcribingIndicatorTask?.cancel()
@@ -1269,7 +1287,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
             statusText = "Screenshot Required"
             overlayManager.dismiss()
 
-            let s = NSSound(named: "Basso"); s?.volume = soundVolume; s?.play()
+            playFeedbackSound(named: "Basso")
             showScreenshotPermissionAlert(message: message)
         }
         // Non-permission errors (transient failures) — continue recording without context
