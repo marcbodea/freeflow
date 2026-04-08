@@ -1,6 +1,9 @@
 import Foundation
 import ApplicationServices
 import AppKit
+import os.log
+
+private let contextLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Context")
 
 struct AppContext {
     let appName: String?
@@ -31,19 +34,34 @@ Return only two sentences, no labels, no markdown, no extra commentary.
     private let apiKey: String
     private let baseURL: String
     private let customContextPrompt: String
+    private let forceHTTP2: Bool
     private let fallbackTextModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     private let visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let contextRequestTimeoutSeconds: TimeInterval = 10
+    private let serverErrorRetryCount = 1
+    private let serverErrorRetryDelayNanoseconds: UInt64 = 250_000_000
     private let maxScreenshotDataURILength = 500_000
     private let screenshotCompressionPrimary = 0.5
     private let screenshotMaxDimension: CGFloat = 1024
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", customContextPrompt: String = "") {
+    private func elapsedMilliseconds(since startTime: CFAbsoluteTime) -> Double {
+        (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+    }
+
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        customContextPrompt: String = "",
+        forceHTTP2: Bool = false
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.customContextPrompt = customContextPrompt
+        self.forceHTTP2 = forceHTTP2
     }
 
     func collectContext() async -> AppContext {
+        let t0 = CFAbsoluteTimeGetCurrent()
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
             return AppContext(
                 appName: nil,
@@ -62,16 +80,34 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         let bundleIdentifier = frontmostApp.bundleIdentifier
         let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
 
+        let metadataT0 = CFAbsoluteTimeGetCurrent()
+        let windowTitleT0 = CFAbsoluteTimeGetCurrent()
         let windowTitle = focusedWindowTitle(from: appElement) ?? appName
+        os_log(.info, log: contextLog, "collectContext(): window title resolved in %.3fms", elapsedMilliseconds(since: windowTitleT0))
+        let selectedTextT0 = CFAbsoluteTimeGetCurrent()
         let selectedText = selectedText(from: appElement)
+        os_log(.info, log: contextLog, "collectContext(): selected text resolved in %.3fms", elapsedMilliseconds(since: selectedTextT0))
+        os_log(.info, log: contextLog, "collectContext(): metadata resolved in %.3fms", elapsedMilliseconds(since: metadataT0))
+
+        let screenshotT0 = CFAbsoluteTimeGetCurrent()
         let screenshot = captureActiveWindowScreenshot(
             processIdentifier: frontmostApp.processIdentifier,
             appElement: appElement,
             focusedWindowTitle: windowTitle
         )
+        os_log(
+            .info,
+            log: contextLog,
+            "collectContext(): screenshot resolved in %.3fms (available=%{public}d bytes=%{public}d error=%{public}@)",
+            elapsedMilliseconds(since: screenshotT0),
+            screenshot.dataURL != nil,
+            screenshot.dataURL?.utf8.count ?? 0,
+            screenshot.error ?? "none"
+        )
         let currentActivity: String
         let contextPrompt: String?
         if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let inferenceT0 = CFAbsoluteTimeGetCurrent()
             if let result = await inferActivityWithLLM(
                 appName: appName,
                 bundleIdentifier: bundleIdentifier,
@@ -79,9 +115,11 @@ Return only two sentences, no labels, no markdown, no extra commentary.
                 selectedText: selectedText,
                 screenshotDataURL: screenshot.dataURL
             ) {
+                os_log(.info, log: contextLog, "collectContext(): llm inference succeeded in %.3fms", (CFAbsoluteTimeGetCurrent() - inferenceT0) * 1000)
                 currentActivity = result.activity
                 contextPrompt = result.prompt
             } else {
+                os_log(.info, log: contextLog, "collectContext(): llm inference failed in %.3fms, using fallback", (CFAbsoluteTimeGetCurrent() - inferenceT0) * 1000)
                 currentActivity = fallbackCurrentActivity(
                     appName: appName,
                     bundleIdentifier: bundleIdentifier,
@@ -101,6 +139,8 @@ Return only two sentences, no labels, no markdown, no extra commentary.
             )
             contextPrompt = nil
         }
+
+        os_log(.info, log: contextLog, "collectContext(): finished in %.3fms", elapsedMilliseconds(since: t0))
 
         return AppContext(
             appName: appName,
@@ -129,6 +169,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
 
         for model in modelsToTry {
             let screenshotPayload = model == visionModel ? screenshotDataURL : nil
+            os_log(.info, log: contextLog, "inferActivityWithLLM(): trying model=%{public}@ screenshot=%{public}d", model, screenshotPayload != nil)
             if let inferred = await inferActivityWithLLM(
                 appName: appName,
                 bundleIdentifier: bundleIdentifier,
@@ -153,10 +194,13 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         model: String
     ) async -> (activity: String, prompt: String)? {
         do {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let requestBuildT0 = CFAbsoluteTimeGetCurrent()
             var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = contextRequestTimeoutSeconds
 
             let metadata = """
 App: \(appName ?? "Unknown")
@@ -205,27 +249,158 @@ Selected text: \(selectedText ?? "None")
             ]
 
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
+            os_log(
+                .info,
+                log: contextLog,
+                "inferActivityWithLLM(): request built in %.3fms for model=%{public}@ screenshot=%{public}d payloadBytes=%{public}d",
+                elapsedMilliseconds(since: requestBuildT0),
+                model,
+                screenshotDataURL != nil,
+                request.httpBody?.count ?? 0
+            )
+            let requestT0 = CFAbsoluteTimeGetCurrent()
+            let result = try await performJSONRequestWithServerErrorRetry(
+                request: request,
+                timeout: contextRequestTimeoutSeconds,
+                retryCount: serverErrorRetryCount,
+                retryLabel: "inferActivityWithLLM()",
+                model: model,
+                screenshotAttached: screenshotDataURL != nil
+            )
+            os_log(
+                .info,
+                log: contextLog,
+                "inferActivityWithLLM(): request finished in %.3fms for model=%{public}@ screenshot=%{public}d status=%ld responseBytes=%{public}d",
+                elapsedMilliseconds(since: requestT0),
+                model,
+                screenshotDataURL != nil,
+                result.statusCode,
+                result.data.count
+            )
+            guard result.statusCode == 200 else {
                 return nil
             }
-            guard httpResponse.statusCode == 200 else {
-                return nil
-            }
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let decodeT0 = CFAbsoluteTimeGetCurrent()
+            guard let json = try JSONSerialization.jsonObject(with: result.data) as? [String: Any],
                   let choices = json["choices"] as? [[String: Any]],
                   let firstChoice = choices.first,
                   let message = firstChoice["message"] as? [String: Any],
                   let content = message["content"] as? String else {
                 return nil
             }
+            os_log(.info, log: contextLog, "inferActivityWithLLM(): response decoded in %.3fms", elapsedMilliseconds(since: decodeT0))
 
             let cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.isEmpty else { return nil }
+            os_log(.info, log: contextLog, "inferActivityWithLLM(): finished in %.3fms total for model=%{public}@", elapsedMilliseconds(since: t0), model)
             return (activity: normalizedActivitySummary(cleaned), prompt: fullPrompt)
         } catch {
             return nil
         }
+    }
+
+    private func performJSONRequestWithServerErrorRetry(
+        request: URLRequest,
+        timeout: TimeInterval,
+        retryCount: Int,
+        retryLabel: StaticString,
+        model: String,
+        screenshotAttached: Bool
+    ) async throws -> (data: Data, statusCode: Int) {
+        var attempt = 0
+        while true {
+            attempt += 1
+            let result = try forceHTTP2
+                ? await performCurlJSONRequest(request: request, timeout: timeout)
+                : await performURLSessionJSONRequest(request: request)
+
+            if (500...599).contains(result.statusCode), attempt <= retryCount + 1 {
+                if attempt <= retryCount {
+                    os_log(
+                        .error,
+                        log: contextLog,
+                        "%{public}s: retrying after HTTP %ld (attempt %d/%d) for model=%{public}@ screenshot=%{public}d",
+                        retryLabel.utf8Start,
+                        result.statusCode,
+                        attempt + 1,
+                        retryCount + 1,
+                        model,
+                        screenshotAttached
+                    )
+                    try? await Task.sleep(nanoseconds: serverErrorRetryDelayNanoseconds)
+                    continue
+                }
+            }
+
+            return result
+        }
+    }
+
+    private func performURLSessionJSONRequest(request: URLRequest) async throws -> (data: Data, statusCode: Int) {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        os_log(.info, log: contextLog, "performURLSessionJSONRequest(): finished in %.3fms status=%ld bytes=%{public}d", elapsedMilliseconds(since: t0), httpResponse.statusCode, data.count)
+        return (data, httpResponse.statusCode)
+    }
+
+    private func performCurlJSONRequest(request: URLRequest, timeout: TimeInterval) async throws -> (data: Data, statusCode: Int) {
+        try await Task.detached(priority: .userInitiated) {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            let tempDirectory = FileManager.default.temporaryDirectory
+            let tempURL = tempDirectory.appendingPathComponent(UUID().uuidString + ".json")
+            let outputURL = tempDirectory.appendingPathComponent(UUID().uuidString + ".out")
+            defer {
+                try? FileManager.default.removeItem(at: tempURL)
+                try? FileManager.default.removeItem(at: outputURL)
+            }
+
+            try (request.httpBody ?? Data()).write(to: tempURL, options: .atomic)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            process.arguments = [
+                "--silent",
+                "--show-error",
+                "--http2",
+                "--max-time", String(Int(timeout)),
+                "--output", outputURL.path,
+                "--write-out", "%{http_code}",
+                request.url!.absoluteString,
+                "-H", "Authorization: Bearer \(self.apiKey)",
+                "-H", "Content-Type: application/json",
+                "--data-binary", "@\(tempURL.path)"
+            ]
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            let launchT0 = CFAbsoluteTimeGetCurrent()
+            try process.run()
+            process.waitUntilExit()
+            os_log(.info, log: contextLog, "performCurlJSONRequest(): curl process finished in %.3fms", self.elapsedMilliseconds(since: launchT0))
+
+            let statusData = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            let errorText = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let statusText = String(data: statusData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let statusCode = Int(statusText) ?? 0
+            let outputData = (try? Data(contentsOf: outputURL)) ?? Data()
+
+            guard process.terminationStatus == 0 else {
+                os_log(.error, log: contextLog, "curl context request failed: exit=%d%{public}@", process.terminationStatus, errorText.isEmpty ? "" : " stderr=\(errorText)")
+                throw URLError(.networkConnectionLost)
+            }
+
+            os_log(.info, log: contextLog, "performCurlJSONRequest(): finished in %.3fms status=%ld bytes=%{public}d", self.elapsedMilliseconds(since: t0), statusCode, outputData.count)
+            return (outputData, statusCode)
+        }.value
     }
 
     private func normalizedActivitySummary(_ value: String) -> String {
@@ -334,6 +509,7 @@ Selected text: \(selectedText ?? "None")
         appElement: AXUIElement,
         focusedWindowTitle: String?
     ) -> (dataURL: String?, mimeType: String?, error: String?) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         if !CGPreflightScreenCaptureAccess() {
             return (
                 nil,
@@ -342,8 +518,10 @@ Selected text: \(selectedText ?? "None")
             )
         }
 
+        let windowListT0 = CFAbsoluteTimeGetCurrent()
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]]
+        os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): window list fetched in %.3fms", elapsedMilliseconds(since: windowListT0))
 
         guard let windows else {
             return (nil, nil, "Unable to read window list")
@@ -364,6 +542,7 @@ Selected text: \(selectedText ?? "None")
             let name: String?
         }
 
+        let candidateBuildT0 = CFAbsoluteTimeGetCurrent()
         let candidateWindows = windows.compactMap { windowInfo -> CandidateWindow? in
             guard let ownerPID = windowInfo[ownerPIDKey] as? Int,
                   ownerPID == processIdentifier else {
@@ -386,8 +565,12 @@ Selected text: \(selectedText ?? "None")
                 name: name
             )
         }
+        os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): %d candidate windows built in %.3fms", candidateWindows.count, elapsedMilliseconds(since: candidateBuildT0))
 
+        let focusedBoundsT0 = CFAbsoluteTimeGetCurrent()
         if let focusedWindowBounds = focusedWindowBounds(from: appElement), !focusedWindowBounds.isNull {
+            os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): focused bounds resolved in %.3fms", elapsedMilliseconds(since: focusedBoundsT0))
+            let overlapMatchT0 = CFAbsoluteTimeGetCurrent()
             if let activeWindow = candidateWindows
                 .compactMap({ candidate -> (CandidateWindow, CGFloat)? in
                     guard let candidateBounds = candidate.bounds else { return nil }
@@ -403,6 +586,7 @@ Selected text: \(selectedText ?? "None")
                     return lhs.0.layer < rhs.0.layer
                 })
                     .first?.0 {
+                os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): overlap match found in %.3fms", elapsedMilliseconds(since: overlapMatchT0))
                 if let dataURL = captureWindowImage(
                     windowID: activeWindow.id,
                     fileType: .jpeg,
@@ -410,45 +594,53 @@ Selected text: \(selectedText ?? "None")
                     compression: screenshotCompressionPrimary,
                     maxDimension: screenshotMaxDimension
                 ) {
+                    os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): overlap window capture succeeded in %.3fms", elapsedMilliseconds(since: t0))
                     return (dataURL, "image/jpeg", nil)
                 }
             }
 
-            if let focusedWindowTitle,
-               let activeWindow = candidateWindows
-                   .filter({ candidate in
-                       let normalizedName = candidate.name?
-                           .lowercased()
-                           .trimmingCharacters(in: .whitespacesAndNewlines)
-                       let normalizedTarget = focusedWindowTitle
-                           .lowercased()
-                           .trimmingCharacters(in: .whitespacesAndNewlines)
-                       guard let normalizedName, !normalizedName.isEmpty,
-                             !normalizedTarget.isEmpty else {
-                           return false
-                       }
+            if let focusedWindowTitle {
+                let titleMatchT0 = CFAbsoluteTimeGetCurrent()
+                if let activeWindow = candidateWindows
+                    .filter({ candidate in
+                        let normalizedName = candidate.name?
+                            .lowercased()
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let normalizedTarget = focusedWindowTitle
+                            .lowercased()
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard let normalizedName, !normalizedName.isEmpty,
+                              !normalizedTarget.isEmpty else {
+                            return false
+                        }
 
-                       return normalizedName == normalizedTarget || normalizedName.contains(normalizedTarget)
-                   })
-                   .sorted(by: { lhs, rhs in
-                       if lhs.layer == rhs.layer {
-                           return lhs.area > rhs.area
-                       }
-                       return lhs.layer < rhs.layer
-                   })
-                   .first {
-                if let dataURL = captureWindowImage(
-                    windowID: activeWindow.id,
-                    fileType: .jpeg,
-                    mimeType: "image/jpeg",
-                    compression: screenshotCompressionPrimary,
-                    maxDimension: screenshotMaxDimension
-                ) {
-                    return (dataURL, "image/jpeg", nil)
+                        return normalizedName == normalizedTarget || normalizedName.contains(normalizedTarget)
+                    })
+                    .sorted(by: { lhs, rhs in
+                        if lhs.layer == rhs.layer {
+                            return lhs.area > rhs.area
+                        }
+                        return lhs.layer < rhs.layer
+                    })
+                    .first {
+                    os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): title match found in %.3fms", elapsedMilliseconds(since: titleMatchT0))
+                    if let dataURL = captureWindowImage(
+                        windowID: activeWindow.id,
+                        fileType: .jpeg,
+                        mimeType: "image/jpeg",
+                        compression: screenshotCompressionPrimary,
+                        maxDimension: screenshotMaxDimension
+                    ) {
+                        os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): title window capture succeeded in %.3fms", elapsedMilliseconds(since: t0))
+                        return (dataURL, "image/jpeg", nil)
+                    }
                 }
             }
+        } else {
+            os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): focused bounds unavailable after %.3fms", elapsedMilliseconds(since: focusedBoundsT0))
         }
 
+        let fullScreenCaptureT0 = CFAbsoluteTimeGetCurrent()
         guard let fullScreenImage = CGWindowListCreateImage(
             CGRect.infinite,
             .optionOnScreenOnly,
@@ -457,7 +649,9 @@ Selected text: \(selectedText ?? "None")
         ) else {
             return (nil, nil, "Could not capture screenshot (screen recording permission or window access issue)")
         }
+        os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): full screen capture finished in %.3fms", elapsedMilliseconds(since: fullScreenCaptureT0))
 
+        let cropEncodeT0 = CFAbsoluteTimeGetCurrent()
         if let croppedImage = croppedWhitespaceImage(from: fullScreenImage),
            let dataURL = convertImageToDataURL(
             croppedImage,
@@ -466,9 +660,12 @@ Selected text: \(selectedText ?? "None")
             compression: screenshotCompressionPrimary,
             maxDimension: screenshotMaxDimension
         ) {
+            os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): fullscreen crop+encode finished in %.3fms", elapsedMilliseconds(since: cropEncodeT0))
+            os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): succeeded in %.3fms total", elapsedMilliseconds(since: t0))
             return (dataURL, "image/jpeg", nil)
         }
 
+        os_log(.info, log: contextLog, "captureActiveWindowScreenshot(): failed in %.3fms total", elapsedMilliseconds(since: t0))
         return (nil, nil, "Could not capture screenshot within size limits")
     }
 
@@ -479,6 +676,7 @@ Selected text: \(selectedText ?? "None")
         compression: Double? = nil,
         maxDimension: CGFloat? = nil
     ) -> String? {
+        let t0 = CFAbsoluteTimeGetCurrent()
         guard let image = CGWindowListCreateImage(
             .null,
             .optionIncludingWindow,
@@ -487,18 +685,22 @@ Selected text: \(selectedText ?? "None")
         ) else {
             return nil
         }
-        guard let croppedImage = croppedWhitespaceImage(from: image) else { return nil }
+        os_log(.info, log: contextLog, "captureWindowImage(): CGWindowListCreateImage finished in %.3fms for window=%u", elapsedMilliseconds(since: t0), windowID)
 
+        let encodeT0 = CFAbsoluteTimeGetCurrent()
         if let dataURL = convertImageToDataURL(
-            croppedImage,
+            image,
             mimeType: mimeType,
             fileType: fileType,
             compression: compression,
             maxDimension: maxDimension
         ) {
+            os_log(.info, log: contextLog, "captureWindowImage(): encode finished in %.3fms for window=%u bytes=%{public}d", elapsedMilliseconds(since: encodeT0), windowID, dataURL.utf8.count)
+            os_log(.info, log: contextLog, "captureWindowImage(): succeeded in %.3fms total for window=%u", elapsedMilliseconds(since: t0), windowID)
             return dataURL
         }
 
+        os_log(.info, log: contextLog, "captureWindowImage(): encode failed in %.3fms total for window=%u", elapsedMilliseconds(since: t0), windowID)
         return nil
     }
 
@@ -544,6 +746,7 @@ Selected text: \(selectedText ?? "None")
         compression: Double?,
         maxDimension: CGFloat?
     ) -> String? {
+        let t0 = CFAbsoluteTimeGetCurrent()
         let compressionSteps: [Double] = if let compression {
             [compression, compression * 0.5, compression * 0.25]
         } else {
@@ -556,10 +759,12 @@ Selected text: \(selectedText ?? "None")
         }
 
         for dim in dimensionSteps {
+            let dimensionT0 = CFAbsoluteTimeGetCurrent()
             let imageToEncode = dim.flatMap { resizedImage(for: image, maxDimension: $0) } ?? image
             let rep = NSBitmapImageRep(cgImage: imageToEncode)
 
             for comp in compressionSteps {
+                let encodeT0 = CFAbsoluteTimeGetCurrent()
                 guard let imageData = rep.representation(
                     using: fileType,
                     properties: [.compressionFactor: comp]
@@ -567,11 +772,15 @@ Selected text: \(selectedText ?? "None")
 
                 let base64 = imageData.base64EncodedString()
                 if base64.count <= maxScreenshotDataURILength {
+                    os_log(.info, log: contextLog, "convertImageToDataURL(): succeeded in %.3fms total (dim=%{public}.0f comp=%.2f bytes=%{public}d, step=%.3fms)", elapsedMilliseconds(since: t0), dim ?? CGFloat(image.width), comp, base64.count, elapsedMilliseconds(since: encodeT0))
                     return "data:\(mimeType);base64,\(base64)"
                 }
+                os_log(.info, log: contextLog, "convertImageToDataURL(): rejected candidate in %.3fms (dim=%{public}.0f comp=%.2f bytes=%{public}d)", elapsedMilliseconds(since: encodeT0), dim ?? CGFloat(image.width), comp, base64.count)
             }
+            os_log(.info, log: contextLog, "convertImageToDataURL(): dimension step finished in %.3fms", elapsedMilliseconds(since: dimensionT0))
         }
 
+        os_log(.info, log: contextLog, "convertImageToDataURL(): failed in %.3fms total", elapsedMilliseconds(since: t0))
         return nil
     }
 

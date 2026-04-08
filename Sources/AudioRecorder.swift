@@ -122,6 +122,7 @@ enum AudioRecorderError: LocalizedError {
 
 class AudioRecorder: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
+    private var engineConfigurationObserver: NSObjectProtocol?
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
     private let audioFileQueue = DispatchQueue(label: "com.zachlatta.freeflow.audiofile")
@@ -130,6 +131,7 @@ class AudioRecorder: NSObject, ObservableObject {
     private var bufferCount: Int = 0
     private var currentDeviceUID: String?
     private var storedInputFormat: AVAudioFormat?
+    private var audioEngineNeedsRebuild = false
 
     @Published var isRecording = false
     /// Thread-safe flag read from the audio tap callback.
@@ -140,6 +142,35 @@ class AudioRecorder: NSObject, ObservableObject {
     /// Called on the audio thread when the first non-silent buffer arrives.
     var onRecordingReady: (() -> Void)?
     private var readyFired = false
+
+    private func teardownEngine() {
+        if let observer = engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            engineConfigurationObserver = nil
+        }
+        guard let engine = audioEngine else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        audioEngine = nil
+        storedInputFormat = nil
+        currentDeviceUID = nil
+        audioEngineNeedsRebuild = false
+        os_log(.info, log: recordingLog, "audio engine torn down")
+    }
+
+    func invalidateAudioEngine() {
+        _recording.withLock { $0 = false }
+        audioFileQueue.sync { audioFile = nil }
+        teardownEngine()
+        isRecording = false
+        smoothedLevel = 0.0
+        DispatchQueue.main.async { self.audioLevel = 0.0 }
+    }
+
+    func markAudioEngineDirty(reason: StaticString) {
+        audioEngineNeedsRebuild = true
+        os_log(.info, log: recordingLog, reason)
+    }
 
     func startRecording(deviceUID: String? = nil) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
@@ -155,19 +186,25 @@ class AudioRecorder: NSObject, ObservableObject {
         }
         os_log(.info, log: recordingLog, "AVCaptureDevice check: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
-        // Reuse existing engine if same device, otherwise build new one
-        if let _ = audioEngine, currentDeviceUID == deviceUID {
+        // Reuse existing engine if same device and the current graph has not been
+        // invalidated by a CoreAudio configuration change.
+        if let _ = audioEngine, currentDeviceUID == deviceUID, !audioEngineNeedsRebuild {
             os_log(.info, log: recordingLog, "reusing existing engine: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         } else {
             // Tear down old engine if device changed
             if audioEngine != nil {
-                audioEngine?.inputNode.removeTap(onBus: 0)
-                audioEngine?.stop()
-                audioEngine = nil
+                teardownEngine()
             }
 
             let engine = AVAudioEngine()
             os_log(.info, log: recordingLog, "AVAudioEngine created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+            engineConfigurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange,
+                object: engine,
+                queue: nil
+            ) { [weak self] _ in
+                self?.markAudioEngineDirty(reason: "audio engine configuration changed; will rebuild on next recording")
+            }
 
             // Set specific input device if requested
             if let uid = deviceUID, !uid.isEmpty, uid != "default",
@@ -245,6 +282,7 @@ class AudioRecorder: NSObject, ObservableObject {
 
             self.audioEngine = engine
             self.currentDeviceUID = deviceUID
+            self.audioEngineNeedsRebuild = false
         }
 
         // Start engine if not already running
@@ -301,9 +339,10 @@ class AudioRecorder: NSObject, ObservableObject {
         smoothedLevel = 0.0
         DispatchQueue.main.async { self.audioLevel = 0.0 }
 
-        // Stop engine so mic indicator goes away — keep engine object for fast restart
-        audioEngine?.stop()
-        os_log(.info, log: recordingLog, "engine stopped (mic indicator off)")
+        // Tear the engine down completely so every dictation starts from a fresh
+        // CoreAudio graph.
+        teardownEngine()
+        os_log(.info, log: recordingLog, "engine fully torn down at stop")
 
         return tempFileURL
     }
@@ -347,6 +386,11 @@ class AudioRecorder: NSObject, ObservableObject {
     }
 
     func cleanup() {
+        invalidateAudioEngine()
+        cleanupTemporaryFile()
+    }
+
+    func cleanupTemporaryFile() {
         if let url = tempFileURL {
             try? FileManager.default.removeItem(at: url)
             tempFileURL = nil

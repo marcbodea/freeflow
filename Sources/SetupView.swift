@@ -1007,7 +1007,7 @@ struct SetupView: View {
                             apiKey: appState.apiKey,
                             baseURL: appState.apiBaseURL,
                             forceHTTP2: appState.forceHTTP2Transcription,
-                            transcriptionModel: appState.transcriptionModel
+                            transcriptionModel: appState.effectiveTranscriptionModel
                         )
                         let transcript = try await service.transcribe(fileURL: url)
                         await MainActor.run {

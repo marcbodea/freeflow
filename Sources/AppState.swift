@@ -115,6 +115,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
     private let transcriptionModelStorageKey = "transcription_model"
+    private let customTranscriptionModelStorageKey = "custom_transcription_model"
     private let playFeedbackSoundsStorageKey = "play_feedback_sounds"
     private let soundVolumeStorageKey = "sound_volume"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
@@ -130,14 +131,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var apiKey: String {
         didSet {
             persistAPIKey(apiKey)
-            contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
+            contextService = AppContextService(
+                apiKey: apiKey,
+                baseURL: apiBaseURL,
+                customContextPrompt: customContextPrompt,
+                forceHTTP2: forceHTTP2Transcription
+            )
         }
     }
 
     @Published var apiBaseURL: String {
         didSet {
             persistAPIBaseURL(apiBaseURL)
-            contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
+            contextService = AppContextService(
+                apiKey: apiKey,
+                baseURL: apiBaseURL,
+                customContextPrompt: customContextPrompt,
+                forceHTTP2: forceHTTP2Transcription
+            )
         }
     }
 
@@ -182,7 +193,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var customContextPrompt: String {
         didSet {
             UserDefaults.standard.set(customContextPrompt, forKey: customContextPromptStorageKey)
-            contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
+            contextService = AppContextService(
+                apiKey: apiKey,
+                baseURL: apiBaseURL,
+                customContextPrompt: customContextPrompt,
+                forceHTTP2: forceHTTP2Transcription
+            )
         }
     }
 
@@ -213,12 +229,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var forceHTTP2Transcription: Bool {
         didSet {
             UserDefaults.standard.set(forceHTTP2Transcription, forKey: forceHTTP2TranscriptionStorageKey)
+            contextService = AppContextService(
+                apiKey: apiKey,
+                baseURL: apiBaseURL,
+                customContextPrompt: customContextPrompt,
+                forceHTTP2: forceHTTP2Transcription
+            )
         }
     }
 
     @Published var transcriptionModel: TranscriptionModel {
         didSet {
             UserDefaults.standard.set(transcriptionModel.rawValue, forKey: transcriptionModelStorageKey)
+        }
+    }
+
+    @Published var customTranscriptionModel: String {
+        didSet {
+            UserDefaults.standard.set(customTranscriptionModel, forKey: customTranscriptionModelStorageKey)
         }
     }
 
@@ -232,6 +260,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
         }
+    }
+
+    var effectiveTranscriptionModel: String {
+        let customModel = customTranscriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return customModel.isEmpty ? transcriptionModel.rawValue : customModel
     }
 
     @Published var isRecording = false
@@ -308,6 +341,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionModel = TranscriptionModel(
             rawValue: UserDefaults.standard.string(forKey: transcriptionModelStorageKey) ?? ""
         ) ?? .whisperV3
+        let customTranscriptionModel = UserDefaults.standard.string(forKey: customTranscriptionModelStorageKey) ?? ""
         let playFeedbackSounds = UserDefaults.standard.object(forKey: playFeedbackSoundsStorageKey) == nil
             ? true
             : UserDefaults.standard.bool(forKey: playFeedbackSoundsStorageKey)
@@ -328,7 +362,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
 
-        self.contextService = AppContextService(apiKey: apiKey, baseURL: apiBaseURL, customContextPrompt: customContextPrompt)
+        self.contextService = AppContextService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            customContextPrompt: customContextPrompt,
+            forceHTTP2: forceHTTP2Transcription
+        )
         self.hasCompletedSetup = hasCompletedSetup
         self.apiKey = apiKey
         self.apiBaseURL = apiBaseURL
@@ -345,6 +384,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
         self.transcriptionModel = transcriptionModel
+        self.customTranscriptionModel = customTranscriptionModel
         self.playFeedbackSounds = playFeedbackSounds
         self.soundVolume = soundVolume
         self.pipelineHistory = savedHistory
@@ -600,7 +640,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         )
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async {
-                self?.refreshAvailableMicrophones()
+                guard let self else { return }
+                self.refreshAvailableMicrophones()
+
+                // Mark the cached engine stale so the next recording rebuilds from
+                // a fresh CoreAudio route, but keep the fast reuse path otherwise.
+                self.audioRecorder.markAudioEngineDirty(reason: "audio device list changed; will rebuild on next recording")
             }
         }
         audioDeviceListenerBlock = block
@@ -843,6 +888,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func beginRecording(triggerMode: RecordingTriggerMode) {
         os_log(.info, log: recordingLog, "beginRecording() entered")
+        let recordingStartT0 = CFAbsoluteTimeGetCurrent()
         errorMessage = nil
 
         isRecording = true
@@ -863,11 +909,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         // Transition to waveform when first real audio arrives (any non-zero RMS)
         let deviceUID = selectedMicrophoneID
+        os_log(.info, log: recordingLog, "beginRecording() using deviceUID=%{public}@", deviceUID)
         audioRecorder.onRecordingReady = { [weak self] in
             DispatchQueue.main.async {
                 guard let self else { return }
                 initTimer.cancel()
-                os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
+                let totalReadyMs = (CFAbsoluteTimeGetCurrent() - recordingStartT0) * 1000
+                os_log(.info, log: recordingLog, "first real audio — transitioning to waveform (%.3fms total from beginRecording)", totalReadyMs)
                 self.statusText = "Recording..."
                 if overlayShown {
                     self.overlayManager.transitionToRecording(mode: self.activeRecordingTriggerMode ?? triggerMode)
@@ -885,7 +933,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
                 try self.audioRecorder.startRecording(deviceUID: deviceUID)
-                os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                let recorderStartMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+                let totalBeginMs = (CFAbsoluteTimeGetCurrent() - recordingStartT0) * 1000
+                os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms (%.3fms total from beginRecording)", recorderStartMs, totalBeginMs)
                 DispatchQueue.main.async {
                     self.startContextCapture()
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
@@ -967,6 +1017,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func stopAndTranscribe() {
+        let pipelineT0 = CFAbsoluteTimeGetCurrent()
         cancelPendingShortcutStart()
         shortcutSessionController.reset()
         activeRecordingTriggerMode = nil
@@ -995,6 +1046,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         let savedAudioFile = Self.saveAudioFile(from: fileURL)
         let transcriptionFileURL = savedAudioFile?.fileURL ?? fileURL
+        os_log(.info, log: recordingLog, "stopAndTranscribe(): audio prepared in %.3fms", (CFAbsoluteTimeGetCurrent() - pipelineT0) * 1000)
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
@@ -1020,14 +1072,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
             apiKey: apiKey,
             baseURL: apiBaseURL,
             forceHTTP2: forceHTTP2Transcription,
-            transcriptionModel: transcriptionModel
+            transcriptionModel: effectiveTranscriptionModel
         )
-        let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
+        let postProcessingService = PostProcessingService(
+            apiKey: apiKey,
+            baseURL: apiBaseURL,
+            forceHTTP2: forceHTTP2Transcription
+        )
 
         Task {
             do {
+                let transcriptionT0 = CFAbsoluteTimeGetCurrent()
                 async let transcript = transcriptionService.transcribe(fileURL: transcriptionFileURL)
                 let rawTranscript = try await transcript
+                os_log(.info, log: recordingLog, "stopAndTranscribe(): transcription finished in %.3fms", (CFAbsoluteTimeGetCurrent() - transcriptionT0) * 1000)
+                let contextT0 = CFAbsoluteTimeGetCurrent()
                 let appContext: AppContext
                 if let sessionContext {
                     appContext = sessionContext
@@ -1036,6 +1095,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 } else {
                     appContext = fallbackContextAtStop()
                 }
+                os_log(.info, log: recordingLog, "stopAndTranscribe(): context resolved in %.3fms", (CFAbsoluteTimeGetCurrent() - contextT0) * 1000)
                 await MainActor.run { [weak self] in
                     self?.debugStatusMessage = "Running post-processing"
                 }
@@ -1043,16 +1103,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
                 let processingStatus: String
                 let postProcessingPrompt: String
                 do {
+                    let postProcessingT0 = CFAbsoluteTimeGetCurrent()
                     let postProcessingResult = try await postProcessingService.postProcess(
                         transcript: rawTranscript,
                         context: appContext,
                         customVocabulary: customVocabulary,
                         customSystemPrompt: customSystemPrompt
                     )
+                    os_log(.info, log: recordingLog, "stopAndTranscribe(): post-processing finished in %.3fms", (CFAbsoluteTimeGetCurrent() - postProcessingT0) * 1000)
                     finalTranscript = postProcessingResult.transcript
                     processingStatus = "Post-processing succeeded"
                     postProcessingPrompt = postProcessingResult.prompt
                 } catch {
+                    os_log(.error, log: recordingLog, "stopAndTranscribe(): post-processing failed after %.3fms: %{public}@", (CFAbsoluteTimeGetCurrent() - pipelineT0) * 1000, error.localizedDescription)
                     finalTranscript = rawTranscript
                     processingStatus = "Post-processing failed, using raw transcript"
                     postProcessingPrompt = ""
@@ -1099,7 +1162,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
                         }
                     }
 
-                    self.audioRecorder.cleanup()
+                    self.audioRecorder.cleanupTemporaryFile()
+                    os_log(.info, log: recordingLog, "stopAndTranscribe(): pipeline finished in %.3fms", (CFAbsoluteTimeGetCurrent() - pipelineT0) * 1000)
 
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                         if self.statusText == completionStatusText || self.statusText == "Nothing to transcribe" {
@@ -1375,9 +1439,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func writeTranscriptToPasteboard(_ transcript: String) -> PendingClipboardRestore? {
         let pasteboard = NSPasteboard.general
         let snapshot = preserveClipboard ? PreservedPasteboardSnapshot(pasteboard: pasteboard) : nil
+        let transcriptToPaste = transcript.hasSuffix(" ") ? transcript : transcript + " "
 
         pasteboard.clearContents()
-        pasteboard.setString(transcript, forType: .string)
+        pasteboard.setString(transcriptToPaste, forType: .string)
 
         guard let snapshot else { return nil }
         return PendingClipboardRestore(snapshot: snapshot, expectedChangeCount: pasteboard.changeCount)

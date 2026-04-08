@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let postProcessingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "PostProcessing")
 
 enum PostProcessingError: LocalizedError {
     case requestFailed(Int, String)
@@ -42,12 +45,14 @@ Output rules:
 
     private let apiKey: String
     private let baseURL: String
+    private let forceHTTP2: Bool
     private let defaultModel = "openai/gpt-oss-20b"
-    private let postProcessingTimeoutSeconds: TimeInterval = 20
+    private let postProcessingTimeoutSeconds: TimeInterval = 10
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1") {
+    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", forceHTTP2: Bool = false) {
         self.apiKey = apiKey
         self.baseURL = baseURL
+        self.forceHTTP2 = forceHTTP2
     }
 
     func postProcess(
@@ -56,6 +61,8 @@ Output rules:
         customVocabulary: String,
         customSystemPrompt: String = ""
     ) async throws -> PostProcessingResult {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        os_log(.info, log: postProcessingLog, "postProcess() started")
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
 
         let timeoutSeconds = postProcessingTimeoutSeconds
@@ -83,6 +90,7 @@ Output rules:
                     throw PostProcessingError.invalidResponse("No post-processing result")
                 }
                 group.cancelAll()
+                os_log(.info, log: postProcessingLog, "postProcess() finished in %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 return result
             } catch {
                 group.cancelAll()
@@ -98,6 +106,7 @@ Output rules:
         customVocabulary: [String],
         customSystemPrompt: String = ""
     ) async throws -> PostProcessingResult {
+        let t0 = CFAbsoluteTimeGetCurrent()
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -164,7 +173,19 @@ Model: \(model)
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        if forceHTTP2 {
+            data = try await performCurlJSONRequest(request: request, timeout: postProcessingTimeoutSeconds)
+            response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+        } else {
+            (data, response) = try await URLSession.shared.data(for: request)
+        }
         guard let httpResponse = response as? HTTPURLResponse else {
             throw PostProcessingError.invalidResponse("No HTTP response")
         }
@@ -182,10 +203,55 @@ Model: \(model)
             throw PostProcessingError.invalidResponse("Missing choices[0].message.content")
         }
 
+        os_log(.info, log: postProcessingLog, "chat/completions finished in %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+
         return PostProcessingResult(
             transcript: sanitizePostProcessedTranscript(content),
             prompt: promptForDisplay
         )
+    }
+
+    private func performCurlJSONRequest(request: URLRequest, timeout: TimeInterval) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            try (request.httpBody ?? Data()).write(to: tempURL, options: .atomic)
+
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            process.arguments = [
+                "--silent",
+                "--show-error",
+                "--fail",
+                "--http2",
+                "--max-time", String(Int(timeout)),
+                request.url!.absoluteString,
+                "-H", "Authorization: Bearer \(self.apiKey)",
+                "-H", "Content-Type: application/json",
+                "--data-binary", "@\(tempURL.path)"
+            ]
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            try process.run()
+            process.waitUntilExit()
+
+            let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+            let errorText = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard process.terminationStatus == 0 else {
+                os_log(.error, log: postProcessingLog, "curl post-processing request failed: exit=%d%{public}@", process.terminationStatus, errorText.isEmpty ? "" : " stderr=\(errorText)")
+                throw URLError(.networkConnectionLost)
+            }
+
+            return outputData
+        }.value
     }
 
     private func sanitizePostProcessedTranscript(_ value: String) -> String {

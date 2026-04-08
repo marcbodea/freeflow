@@ -33,7 +33,7 @@ class TranscriptionService {
     private let apiKey: String
     private let baseURL: String
     private let forceHTTP2: Bool
-    private let transcriptionModel: TranscriptionModel
+    private let transcriptionModel: String
     private let transcriptionTimeoutSeconds: TimeInterval = 20
     private let uploadSampleRate = 16_000.0
     private let uploadChannelCount: AVAudioChannelCount = 1
@@ -42,7 +42,7 @@ class TranscriptionService {
         apiKey: String,
         baseURL: String = "https://api.groq.com/openai/v1",
         forceHTTP2: Bool = false,
-        transcriptionModel: TranscriptionModel = .whisperV3
+        transcriptionModel: String = TranscriptionModel.whisperV3.rawValue
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
@@ -69,6 +69,8 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL) async throws -> String {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        os_log(.info, log: transcriptionLog, "transcribe() started for %{public}@", fileURL.lastPathComponent)
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
@@ -86,14 +88,18 @@ class TranscriptionService {
                 throw TranscriptionError.submissionFailed("No transcription result")
             }
             group.cancelAll()
+            os_log(.info, log: transcriptionLog, "transcribe() finished in %.3fms for %{public}@", (CFAbsoluteTimeGetCurrent() - t0) * 1000, fileURL.lastPathComponent)
             return result
         }
     }
 
     // Send audio file for transcription and return text
     private func transcribeAudio(fileURL: URL) async throws -> String {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        os_log(.info, log: transcriptionLog, "prepareAudioForUpload() started for %{public}@", fileURL.lastPathComponent)
         let preparedAudio = try prepareAudioForUpload(from: fileURL)
         defer { preparedAudio.cleanup() }
+        os_log(.info, log: transcriptionLog, "prepareAudioForUpload() finished in %.3fms for %{public}@", (CFAbsoluteTimeGetCurrent() - t0) * 1000, fileURL.lastPathComponent)
 
         if forceHTTP2 {
             return try await transcribeAudioWithCurl(fileURL: preparedAudio.fileURL)
@@ -102,6 +108,7 @@ class TranscriptionService {
     }
 
     private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
+        let t0 = CFAbsoluteTimeGetCurrent()
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -113,7 +120,7 @@ class TranscriptionService {
         let body = makeMultipartBody(
             audioData: audioData,
             fileName: fileURL.lastPathComponent,
-            model: transcriptionModel.rawValue,
+            model: transcriptionModel,
             boundary: boundary
         )
 
@@ -136,6 +143,7 @@ class TranscriptionService {
             )
             throw error
         }
+        os_log(.info, log: transcriptionLog, "URLSession upload finished in %.3fms for %{public}@ (bytes=%{public}lld)", (CFAbsoluteTimeGetCurrent() - t0) * 1000, fileURL.lastPathComponent, fileSizeBytes(for: fileURL))
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranscriptionError.submissionFailed("No response from server")
@@ -160,6 +168,7 @@ class TranscriptionService {
 
     private func transcribeAudioWithCurl(fileURL: URL) async throws -> String {
         try await Task.detached(priority: .userInitiated) { [apiKey, transcriptionModel] in
+            let t0 = CFAbsoluteTimeGetCurrent()
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
             process.arguments = [
@@ -170,7 +179,7 @@ class TranscriptionService {
                 "--max-time", String(Int(self.transcriptionTimeoutSeconds)),
                 "\(self.baseURL)/audio/transcriptions",
                 "-H", "Authorization: Bearer \(apiKey)",
-                "-F", "model=\(transcriptionModel.rawValue)",
+                "-F", "model=\(transcriptionModel)",
                 "-F", "file=@\(fileURL.path);type=\(self.audioContentType(for: fileURL.lastPathComponent))"
             ]
 
@@ -203,6 +212,7 @@ class TranscriptionService {
                 )
             }
 
+            os_log(.info, log: transcriptionLog, "curl upload finished in %.3fms for %{public}@ (bytes=%{public}lld)", (CFAbsoluteTimeGetCurrent() - t0) * 1000, fileURL.lastPathComponent, self.fileSizeBytes(for: fileURL))
             return try self.parseTranscript(from: outputData)
         }.value
     }
