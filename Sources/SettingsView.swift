@@ -482,6 +482,24 @@ struct GeneralSettingsView: View {
                     .toggleStyle(.checkbox)
                     .labelsHidden()
             }
+
+            Divider()
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Silence Detection")
+                        .font(.caption.weight(.semibold))
+                    Text("Uses Groq's `no_speech_prob` to discard likely non-speech segments before post-processing. Default is on.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Toggle("", isOn: $appState.silenceDetectionEnabled)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+            }
         }
     }
 

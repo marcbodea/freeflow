@@ -8,15 +8,25 @@ class TranscriptionService {
     private let apiKey: String
     private let baseURL: String
     private let forceHTTP2: Bool
+    private let silenceDetectionEnabled: Bool
+    private let noSpeechThreshold: Double
     private let transcriptionModel = "whisper-large-v3"
     private let transcriptionTimeoutSeconds: TimeInterval = 20
     private let uploadSampleRate = 16_000.0
     private let uploadChannelCount: AVAudioChannelCount = 1
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", forceHTTP2: Bool = false) {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        forceHTTP2: Bool = false,
+        silenceDetectionEnabled: Bool = true,
+        noSpeechThreshold: Double = 0.6
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.forceHTTP2 = forceHTTP2
+        self.silenceDetectionEnabled = silenceDetectionEnabled
+        self.noSpeechThreshold = min(max(noSpeechThreshold, 0), 1)
     }
 
     // Validate API key by hitting a lightweight endpoint
@@ -38,7 +48,11 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL) async throws -> String {
-        return try await withThrowingTaskGroup(of: String.self) { group in
+        try await transcribeDetailed(fileURL: fileURL).text
+    }
+
+    func transcribeDetailed(fileURL: URL) async throws -> TranscriptionResult {
+        return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
@@ -60,7 +74,7 @@ class TranscriptionService {
     }
 
     // Send audio file for transcription and return text
-    private func transcribeAudio(fileURL: URL) async throws -> String {
+    private func transcribeAudio(fileURL: URL) async throws -> TranscriptionResult {
         let preparedAudio = try prepareAudioForUpload(from: fileURL)
         defer { preparedAudio.cleanup() }
 
@@ -70,7 +84,7 @@ class TranscriptionService {
         return try await transcribeAudioWithURLSession(fileURL: preparedAudio.fileURL)
     }
 
-    private func transcribeAudioWithURLSession(fileURL: URL) async throws -> String {
+    private func transcribeAudioWithURLSession(fileURL: URL) async throws -> TranscriptionResult {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -124,10 +138,10 @@ class TranscriptionService {
             throw TranscriptionError.submissionFailed("Status \(httpResponse.statusCode): \(responseBody)")
         }
 
-        return try parseTranscript(from: data)
+        return try parseTranscript(from: data, fileName: fileURL.lastPathComponent)
     }
 
-    private func transcribeAudioWithCurl(fileURL: URL) async throws -> String {
+    private func transcribeAudioWithCurl(fileURL: URL) async throws -> TranscriptionResult {
         try await Task.detached(priority: .userInitiated) { [apiKey, transcriptionModel] in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
@@ -140,6 +154,7 @@ class TranscriptionService {
                 "\(self.baseURL)/audio/transcriptions",
                 "-H", "Authorization: Bearer \(apiKey)",
                 "-F", "model=\(transcriptionModel)",
+                "-F", "response_format=verbose_json",
                 "-F", "file=@\(fileURL.path);type=\(self.audioContentType(for: fileURL.lastPathComponent))"
             ]
 
@@ -172,7 +187,7 @@ class TranscriptionService {
                 )
             }
 
-            return try self.parseTranscript(from: outputData)
+            return try self.parseTranscript(from: outputData, fileName: fileURL.lastPathComponent)
         }.value
     }
 
@@ -204,6 +219,10 @@ class TranscriptionService {
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+        append("verbose_json\r\n")
 
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
@@ -240,10 +259,14 @@ class TranscriptionService {
             && format.commonFormat == .pcmFormatInt16
     }
 
-    private func parseTranscript(from data: Data) throws -> String {
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let text = json["text"] as? String {
-            return text
+    private func parseTranscript(from data: Data, fileName: String) throws -> TranscriptionResult {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        if let response = try? decoder.decode(GroqTranscriptionResponse.self, from: data) {
+            let result = makeTranscriptionResult(from: response)
+            logTranscriptionMetadata(response, result: result, fileName: fileName)
+            return result
         }
 
         let plainText = String(data: data, encoding: .utf8) ?? ""
@@ -255,7 +278,112 @@ class TranscriptionService {
             throw TranscriptionError.pollFailed("Invalid response")
         }
 
+        return TranscriptionResult(text: text)
+    }
+
+    private func makeTranscriptionResult(from response: GroqTranscriptionResponse) -> TranscriptionResult {
+        let fallbackText = sanitizedSegmentText(response.text)
+        guard let segments = response.segments, !segments.isEmpty else {
+            return TranscriptionResult(text: fallbackText)
+        }
+
+        let evaluatedSegments = segments.enumerated().map { index, segment in
+            EvaluatedTranscriptionSegment(
+                segment: segment,
+                text: sanitizedSegmentText(segment.text),
+                isDiscarded: shouldDiscardSegment(segment)
+            )
+        }
+        let discardedCount = evaluatedSegments.filter(\.isDiscarded).count
+        let keptTexts = evaluatedSegments
+            .filter { !$0.isDiscarded && !$0.text.isEmpty }
+            .map(\.text)
+        let filteredText = keptTexts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resultText = filteredText.isEmpty && discardedCount == 0 ? fallbackText : filteredText
+
+        return TranscriptionResult(
+            text: resultText
+        )
+    }
+
+    private func logTranscriptionMetadata(
+        _ response: GroqTranscriptionResponse,
+        result: TranscriptionResult,
+        fileName: String
+    ) {
+        guard let segments = response.segments, !segments.isEmpty else {
+            os_log(
+                .info,
+                log: transcriptionLog,
+                "Groq verbose transcript for %{public}@ returned no segment metadata",
+                fileName
+            )
+            return
+        }
+
+        let evaluatedSegments = segments.enumerated().map { index, segment in
+            EvaluatedTranscriptionSegment(
+                segment: segment,
+                text: sanitizedSegmentText(segment.text),
+                isDiscarded: shouldDiscardSegment(segment)
+            )
+        }
+        let noSpeechValues = segments.compactMap(\.noSpeechProb)
+        let averageNoSpeechProbability = noSpeechValues.isEmpty
+            ? nil
+            : noSpeechValues.reduce(0, +) / Double(noSpeechValues.count)
+        let maximumNoSpeechProbability = noSpeechValues.max()
+        let discardedCount = evaluatedSegments.filter(\.isDiscarded).count
+
+        os_log(
+            .info,
+            log: transcriptionLog,
+            "Groq verbose transcript for %{public}@ returned %{public}ld segments (threshold=%{public}@, discarded=%{public}ld, avg_no_speech_prob=%{public}@, max_no_speech_prob=%{public}@, transcript=%{public}@)",
+            fileName,
+            segments.count,
+            formatMetric(noSpeechThreshold),
+            discardedCount,
+            formatMetric(averageNoSpeechProbability),
+            formatMetric(maximumNoSpeechProbability),
+            result.text
+        )
+
+        for (index, evaluatedSegment) in evaluatedSegments.enumerated() {
+            let segment = evaluatedSegment.segment
+            let segmentID = segment.id ?? index
+            os_log(
+                .info,
+                log: transcriptionLog,
+                "Segment %{public}d %{public}@ [%{public}@-%{public}@] avg_logprob=%{public}@ compression_ratio=%{public}@ no_speech_prob=%{public}@ text=%{public}@",
+                segmentID,
+                evaluatedSegment.isDiscarded ? "discarded" : "kept",
+                formatMetric(segment.start),
+                formatMetric(segment.end),
+                formatMetric(segment.avgLogprob),
+                formatMetric(segment.compressionRatio),
+                formatMetric(segment.noSpeechProb),
+                evaluatedSegment.text
+            )
+        }
+    }
+
+    private func shouldDiscardSegment(_ segment: GroqTranscriptionSegment) -> Bool {
+        guard silenceDetectionEnabled else { return false }
+        guard let noSpeechProb = segment.noSpeechProb else { return false }
+        return noSpeechProb > noSpeechThreshold
+    }
+
+    private func formatMetric(_ value: Double?) -> String {
+        guard let value else { return "n/a" }
+        return String(format: "%.4f", value)
+    }
+
+    private func sanitizedSegmentText(_ text: String?) -> String {
+        guard let text else { return "" }
         return text
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -287,4 +415,29 @@ private struct PreparedUploadAudio {
         guard deleteOnCleanup else { return }
         try? FileManager.default.removeItem(at: fileURL)
     }
+}
+
+struct TranscriptionResult {
+    let text: String
+}
+
+private struct GroqTranscriptionResponse: Decodable {
+    let text: String
+    let segments: [GroqTranscriptionSegment]?
+}
+
+private struct GroqTranscriptionSegment: Decodable {
+    let id: Int?
+    let start: Double?
+    let end: Double?
+    let text: String?
+    let avgLogprob: Double?
+    let compressionRatio: Double?
+    let noSpeechProb: Double?
+}
+
+private struct EvaluatedTranscriptionSegment {
+    let segment: GroqTranscriptionSegment
+    let text: String
+    let isDiscarded: Bool
 }

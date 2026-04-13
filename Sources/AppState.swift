@@ -127,6 +127,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let shortcutStartDelayStorageKey = "shortcut_start_delay"
     private let preserveClipboardStorageKey = "preserve_clipboard"
     private let forceHTTP2TranscriptionStorageKey = "force_http2_transcription"
+    private let silenceDetectionEnabledStorageKey = "silence_detection_enabled"
     private let soundVolumeStorageKey = "sound_volume"
     private let voiceMacrosStorageKey = "voice_macros"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
@@ -228,6 +229,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var silenceDetectionEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(silenceDetectionEnabled, forKey: silenceDetectionEnabledStorageKey)
+        }
+    }
+
     @Published var soundVolume: Float {
         didSet {
             UserDefaults.standard.set(soundVolume, forKey: soundVolumeStorageKey)
@@ -317,6 +324,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
             ? true
             : UserDefaults.standard.bool(forKey: preserveClipboardStorageKey)
         let forceHTTP2Transcription = UserDefaults.standard.bool(forKey: forceHTTP2TranscriptionStorageKey)
+        let silenceDetectionEnabled = UserDefaults.standard.object(forKey: silenceDetectionEnabledStorageKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: silenceDetectionEnabledStorageKey)
         let soundVolume: Float = UserDefaults.standard.object(forKey: soundVolumeStorageKey) != nil
             ? UserDefaults.standard.float(forKey: soundVolumeStorageKey) : 1.0
         
@@ -359,6 +369,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.shortcutStartDelay = shortcutStartDelay
         self.preserveClipboard = preserveClipboard
         self.forceHTTP2Transcription = forceHTTP2Transcription
+        self.silenceDetectionEnabled = silenceDetectionEnabled
         self.soundVolume = soundVolume
         self.voiceMacros = initialMacros
         self.pipelineHistory = savedHistory
@@ -562,7 +573,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionService = TranscriptionService(
             apiKey: apiKey,
             baseURL: apiBaseURL,
-            forceHTTP2: forceHTTP2Transcription
+            forceHTTP2: forceHTTP2Transcription,
+            silenceDetectionEnabled: silenceDetectionEnabled
         )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
         let capturedCustomVocabulary = customVocabulary
@@ -570,26 +582,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         Task {
             do {
-                let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
+                let transcriptionResult = try await transcriptionService.transcribeDetailed(fileURL: audioURL)
+                let rawTranscript = transcriptionResult.text
 
-                let finalTranscript: String
-                let processingStatus: String
-                let postProcessingPrompt: String
-                do {
-                    let postProcessingResult = try await postProcessingService.postProcess(
-                        transcript: rawTranscript,
-                        context: restoredContext,
-                        customVocabulary: capturedCustomVocabulary,
-                        customSystemPrompt: capturedCustomSystemPrompt
-                    )
-                    finalTranscript = postProcessingResult.transcript
-                    processingStatus = "Post-processing succeeded (retried)"
-                    postProcessingPrompt = postProcessingResult.prompt
-                } catch {
-                    finalTranscript = rawTranscript
-                    processingStatus = "Post-processing failed on retry, using raw transcript"
-                    postProcessingPrompt = ""
-                }
+                let processed = await self.processTranscript(
+                    rawTranscript,
+                    context: restoredContext,
+                    postProcessingService: postProcessingService,
+                    customVocabulary: capturedCustomVocabulary,
+                    customSystemPrompt: capturedCustomSystemPrompt
+                )
+                let finalTranscript = processed.finalTranscript
+                let postProcessingPrompt = processed.prompt
+                let processingStatus = processed.status == "Post-processing succeeded"
+                    ? "Post-processing succeeded (retried)"
+                    : "\(processed.status) (retried)"
 
                 await MainActor.run {
                     let updatedItem = PipelineHistoryItem(
@@ -1117,7 +1124,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
             os_log(.info, log: recordingLog, "Voice macro triggered: %{public}@", macro.command)
             return (macro.payload, "Voice macro used: \(macro.command)", "")
         }
-        
+
+        guard !rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return ("", "No speech detected after applying the no-speech threshold", "")
+        }
+
         do {
             let result = try await postProcessingService.postProcess(
                 transcript: rawTranscript,
@@ -1185,14 +1196,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let transcriptionService = TranscriptionService(
             apiKey: apiKey,
             baseURL: apiBaseURL,
-            forceHTTP2: forceHTTP2Transcription
+            forceHTTP2: forceHTTP2Transcription,
+            silenceDetectionEnabled: silenceDetectionEnabled
         )
         let postProcessingService = PostProcessingService(apiKey: apiKey, baseURL: apiBaseURL)
 
         Task {
             do {
-                async let transcript = transcriptionService.transcribe(fileURL: transcriptionFileURL)
-                let rawTranscript = try await transcript
+                async let transcript = transcriptionService.transcribeDetailed(fileURL: transcriptionFileURL)
+                let transcriptionResult = try await transcript
+                let rawTranscript = transcriptionResult.text
                 let appContext: AppContext
                 if let sessionContext {
                     appContext = sessionContext
